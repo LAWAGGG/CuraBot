@@ -1,0 +1,1293 @@
+{
+  "info": {
+    "name": "CuraBot API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "botId",
+      "value": "1"
+    },
+    {
+      "key": "orderId",
+      "value": "1"
+    },
+    {
+      "key": "fileId",
+      "value": "1"
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register - 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register - 409 duplicate email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register - 422 invalid email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"not-an-email\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register - 422 short password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "path": [
+                "api",
+                "auth",
+                "register"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"u2@example.com\",\n  \"password\": \"short\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login - 200 (saves token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.access_token) pm.collectionVariables.set('token', json.access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Login - 401 wrong password",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"wrongpass\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Login - 401 unknown email",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"ghost@example.com\",\n  \"password\": \"password123\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Logout - 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Logout - 401 no token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/logout",
+              "path": [
+                "api",
+                "auth",
+                "logout"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Bots",
+      "item": [
+        {
+          "name": "Create Bot - 201 (saves botId)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/create",
+              "path": [
+                "api",
+                "bots",
+                "create"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Toko A\",\n  \"system_prompt\": \"Kamu adalah CS toko A yang ramah.\",\n  \"api_key\": \"AIzaSyD...\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.id) pm.collectionVariables.set('botId', json.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Bot - 422 short system_prompt",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/create",
+              "path": [
+                "api",
+                "bots",
+                "create"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"X\",\n  \"system_prompt\": \"hi\",\n  \"api_key\": \"AIzaSyD...\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Create Bot - 401 no token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/create",
+              "path": [
+                "api",
+                "bots",
+                "create"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Toko A\",\n  \"system_prompt\": \"Kamu adalah CS toko A yang ramah.\",\n  \"api_key\": \"AIzaSyD...\"\n}"
+            }
+          }
+        },
+        {
+          "name": "List Bots - 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/list",
+              "path": [
+                "api",
+                "bots",
+                "list"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "List Bots - 401 no token",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/list",
+              "path": [
+                "api",
+                "bots",
+                "list"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Get Bot - 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Get Bot - 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/99999",
+              "path": [
+                "api",
+                "bots",
+                "99999"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Update Bot - 200",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Toko A Updated\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Bot - 422 short prompt",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system_prompt\": \"hi\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete Bot - 200",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Delete Bot - 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/99999",
+              "path": [
+                "api",
+                "bots",
+                "99999"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload File - 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/upload",
+              "path": [
+                "api",
+                "files",
+                "upload"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "bot_id",
+                  "value": "{{botId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload File - 400 wrong extension",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/upload",
+              "path": [
+                "api",
+                "files",
+                "upload"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "bot_id",
+                  "value": "{{botId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Files - 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/{{botId}}",
+              "path": [
+                "api",
+                "files",
+                "{{botId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Delete File - 200",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/{{fileId}}",
+              "path": [
+                "api",
+                "files",
+                "{{fileId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Delete File - 404",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/files/99999",
+              "path": [
+                "api",
+                "files",
+                "99999"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "Get Messages - 200 page 1",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages/{{botId}}?page=1&limit=20",
+              "path": [
+                "api",
+                "messages",
+                "{{botId}}?page=1&limit=20"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Get Messages - 422 invalid page",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/messages/{{botId}}?page=0",
+              "path": [
+                "api",
+                "messages",
+                "{{botId}}?page=0"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "item": [
+        {
+          "name": "List Orders - 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.data && json.data[0]) pm.collectionVariables.set('orderId', json.data[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List Orders - 200 filter status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders?status=pending",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders?status=pending"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Update Order - 200",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders/{{orderId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders",
+                "{{orderId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"confirmed\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Order - 422 invalid status",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders/{{orderId}}",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders",
+                "{{orderId}}"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"flying\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update Order - 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders/99999",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders",
+                "99999"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"confirmed\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Export Orders - 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/orders/export",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "orders",
+                "export"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Export Orders - 404 no file",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/99999/orders/export",
+              "path": [
+                "api",
+                "bots",
+                "99999",
+                "orders",
+                "export"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Analytics - 200 default 7d",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/analytics",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "analytics"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Analytics - 200 range=30",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/analytics?range=30",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "analytics?range=30"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Analytics - 422 range=0",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/bots/{{botId}}/analytics?range=0",
+              "path": [
+                "api",
+                "bots",
+                "{{botId}}",
+                "analytics?range=0"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Telegram Webhook",
+      "item": [
+        {
+          "name": "Webhook - /start bot_{id} binds chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/telegram/webhook",
+              "path": [
+                "api",
+                "telegram",
+                "webhook"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"update_id\": 1,\n  \"message\": {\n    \"message_id\": 1,\n    \"from\": {\n      \"id\": 987,\n      \"first_name\": \"John\"\n    },\n    \"chat\": {\n      \"id\": 987,\n      \"type\": \"private\"\n    },\n    \"text\": \"/start bot_{{botId}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook - normal message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/telegram/webhook",
+              "path": [
+                "api",
+                "telegram",
+                "webhook"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"update_id\": 1,\n  \"message\": {\n    \"message_id\": 1,\n    \"from\": {\n      \"id\": 987,\n      \"first_name\": \"John\"\n    },\n    \"chat\": {\n      \"id\": 987,\n      \"type\": \"private\"\n    },\n    \"text\": \"Halo, berapa harga barang A?\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook - unbound chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/telegram/webhook",
+              "path": [
+                "api",
+                "telegram",
+                "webhook"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"update_id\": 3,\n  \"message\": {\n    \"message_id\": 3,\n    \"from\": {\n      \"id\": 111,\n      \"first_name\": \"Stranger\"\n    },\n    \"chat\": {\n      \"id\": 111,\n      \"type\": \"private\"\n    },\n    \"text\": \"hi\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Webhook - empty text ignored",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/telegram/webhook",
+              "path": [
+                "api",
+                "telegram",
+                "webhook"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"update_id\": 4,\n  \"message\": {\n    \"chat\": {\n      \"id\": 987\n    }\n  }\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health - 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/health",
+              "path": [
+                "api",
+                "health"
+              ],
+              "host": [
+                "{{baseUrl}}"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,495 @@
+import json
+import os
+import time
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Optional
+
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from sqlalchemy import func, desc
+from pypdf import PdfReader
+from docx import Document
+from openpyxl import load_workbook
+
+from . import config, security, schemas, telegram_api, gemini_service, excel_service
+from .gemini_service import EDIT_KEYWORDS
+from .database import get_db
+from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat
+
+app = FastAPI(title="CuraBot API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[config.FRONTEND_URL],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def get_text_from_file(path: str, filename: str) -> str:
+    ext = os.path.splitext(filename or "")[1].lower()
+    try:
+        if ext == ".pdf":
+            reader = PdfReader(path)
+            return "\n".join((p.extract_text() or "") for p in reader.pages)
+        if ext in (".docx", ".doc"):
+            doc = Document(path)
+            return "\n".join(p.text for p in doc.paragraphs)
+        if ext == ".xlsx":
+            wb = load_workbook(path, read_only=True, data_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f"[Sheet: {ws.title}]")
+                for row in ws.iter_rows(values_only=True):
+                    cells = ["" if c is None else str(c) for c in row]
+                    if any(cells):
+                        out.append(" | ".join(cells))
+            wb.close()
+            return "\n".join(out)
+    except Exception:
+        return ""
+    return ""
+
+
+def get_bot_or_404(db: Session, user_id: int, bot_id: int) -> Bot:
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user_id, Bot.status == "active").first()
+    if not bot:
+        raise HTTPException(404, "Bot not found")
+    return bot
+
+
+def public_bot(bot: Bot) -> dict:
+    return {
+        "id": bot.id,
+        "name": bot.name,
+        "system_prompt": bot.system_prompt,
+        "telegram_bot_name": bot.telegram_bot_name,
+        "telegram_link": bot.telegram_link,
+        "status": bot.status,
+        "created_at": str(bot.created_at),
+    }
+
+
+def order_to_dict(o: ExtractedOrder) -> dict:
+    return {
+        "id": o.id,
+        "bot_id": o.bot_id,
+        "message_id": o.message_id,
+        "customer_user_id": o.customer_user_id,
+        "customer_name": o.customer_name,
+        "products": o.products,
+        "total_price": float(o.total_price) if o.total_price is not None else None,
+        "delivery_address": o.delivery_address,
+        "customer_phone": o.customer_phone,
+        "special_requests": o.special_requests,
+        "status": o.status,
+        "created_at": str(o.created_at),
+        "updated_at": str(o.updated_at),
+    }
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_handler(request: Request, exc: RequestValidationError):
+    errors = {}
+    messages = []
+    for e in exc.errors():
+        field = ".".join(str(p) for p in e.get("loc", []) if p not in ("body", "query", "path"))
+        msg = e.get("msg", "Invalid value")
+        errors.setdefault(field or "request", []).append(msg)
+        messages.append(f"The {field or 'request'} field: {msg}" if field else msg)
+    first = messages[0] if messages else "Validation failed."
+    summary = first if len(messages) == 1 else f"{first} (and {len(messages) - 1} more error{'s' if len(messages) > 2 else ''})"
+    return JSONResponse(status_code=422, content={"message": summary, "errors": errors})
+
+
+# ---------- AUTH ----------
+
+@app.post("/api/auth/register", status_code=201)
+def register(body: schemas.RegisterIn, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == body.email).first():
+        raise HTTPException(409, "Email already registered")
+    user = User(email=body.email, password_hash=security.hash_password(body.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return {"id": user.id, "email": user.email}
+
+
+@app.post("/api/auth/login")
+def login(body: schemas.LoginIn, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+    if not user or not security.verify_password(body.password, user.password_hash):
+        raise HTTPException(401, "Invalid email or password")
+    return {
+        "access_token": security.create_token(user.id),
+        "token_type": "bearer",
+        "expires_in": config.JWT_EXPIRE_DAYS * 86400,
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(user_id: int = Depends(security.get_current_user)):
+    return {"ok": True}
+
+
+# ---------- BOTS ----------
+
+@app.post("/api/bots/create", status_code=201)
+def create_bot(body: schemas.BotCreateIn, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    bot = Bot(
+        user_id=user_id, name=body.name, system_prompt=body.system_prompt,
+        api_key_encrypted=security.encrypt(body.api_key),
+        telegram_bot_name=config.TELEGRAM_BOT_USERNAME,
+        telegram_link="",
+    )
+    db.add(bot)
+    db.commit()
+    db.refresh(bot)
+    bot.telegram_link = f"https://t.me/{config.TELEGRAM_BOT_USERNAME}?start=bot_{bot.id}"
+    db.commit()
+    db.refresh(bot)
+    return public_bot(bot)
+
+
+@app.get("/api/bots/list")
+def list_bots(user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    bots = (db.query(Bot).filter(Bot.user_id == user_id, Bot.status == "active")
+            .order_by(desc(Bot.created_at)).all())
+    return {"bots": [public_bot(b) for b in bots]}
+
+
+@app.get("/api/bots/{bot_id}")
+def get_bot_endpoint(bot_id: int, user_id: int = Depends(security.get_current_user),
+                     db: Session = Depends(get_db)):
+    return public_bot(get_bot_or_404(db, user_id, bot_id))
+
+
+@app.put("/api/bots/{bot_id}")
+def update_bot(bot_id: int, body: schemas.BotUpdateIn, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    bot = get_bot_or_404(db, user_id, bot_id)
+    if body.name is not None:
+        bot.name = body.name
+    if body.system_prompt is not None:
+        bot.system_prompt = body.system_prompt
+    if body.api_key is not None:
+        bot.api_key_encrypted = security.encrypt(body.api_key)
+    db.commit()
+    db.refresh(bot)
+    return public_bot(bot)
+
+
+@app.delete("/api/bots/{bot_id}")
+def delete_bot(bot_id: int, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    bot = get_bot_or_404(db, user_id, bot_id)
+    bot.status = "inactive"
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- FILES ----------
+
+@app.post("/api/files/upload", status_code=201)
+def upload_file(bot_id: int = Form(...), file: UploadFile = File(...),
+                user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    count = db.query(func.count(UploadedFile.id)).filter(UploadedFile.bot_id == bot_id).scalar()
+    if count >= config.MAX_FILES_PER_BOT:
+        raise HTTPException(400, f"Max {config.MAX_FILES_PER_BOT} files per bot")
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".pdf", ".docx", ".doc", ".xlsx"):
+        raise HTTPException(400, "Only PDF, DOCX, and XLSX allowed")
+    data = file.file.read()
+    if len(data) > config.MAX_FILE_SIZE:
+        raise HTTPException(400, "File too large (max 25MB)")
+    dest_dir = os.path.join(config.UPLOAD_DIR, str(bot_id))
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, f"{int(time.time())}_{os.path.basename(file.filename)}")
+    with open(dest, "wb") as f:
+        f.write(data)
+    text = get_text_from_file(dest, file.filename)
+    row = UploadedFile(bot_id=bot_id, filename=file.filename, file_path=dest,
+                       file_type=ext, file_size=len(data), extracted_text=text)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "filename": row.filename, "file_size": row.file_size, "extracted": bool(text)}
+
+
+@app.get("/api/files/{bot_id}")
+def list_files(bot_id: int, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    rows = (db.query(UploadedFile).filter(UploadedFile.bot_id == bot_id)
+            .order_by(desc(UploadedFile.created_at)).all())
+    return {"files": [{
+        "id": r.id, "bot_id": r.bot_id, "filename": r.filename, "file_type": r.file_type,
+        "file_size": r.file_size, "created_at": str(r.created_at),
+    } for r in rows]}
+
+
+@app.delete("/api/files/{file_id}")
+def delete_file(file_id: int, user_id: int = Depends(security.get_current_user),
+                db: Session = Depends(get_db)):
+    row = (db.query(UploadedFile).join(Bot, Bot.id == UploadedFile.bot_id)
+           .filter(UploadedFile.id == file_id, Bot.user_id == user_id).first())
+    if not row:
+        raise HTTPException(404, "File not found")
+    try:
+        os.remove(row.file_path)
+    except OSError:
+        pass
+    db.delete(row)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- MESSAGES ----------
+
+@app.get("/api/messages/{bot_id}")
+def get_messages(bot_id: int, page: int = Query(1, ge=1), limit: int = Query(20, le=100),
+                 user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    q = db.query(Message).filter(Message.bot_id == bot_id).order_by(desc(Message.created_at))
+    total = q.count()
+    rows = q.offset((page - 1) * limit).limit(limit).all()
+    return {"page": page, "limit": limit, "total": total, "messages": [
+        {
+            "id": r.id, "bot_id": r.bot_id, "user_id": r.user_id, "chat_id": r.chat_id,
+            "message_text": r.message_text, "response_text": r.response_text,
+            "extracted_data": r.extracted_data, "response_time": r.response_time,
+            "model_used": r.model_used, "created_at": str(r.created_at),
+        } for r in rows]}
+
+
+# ---------- ORDERS ----------
+
+@app.get("/api/bots/{bot_id}/orders")
+def get_orders(bot_id: int, page: int = Query(1, ge=1), limit: int = Query(20, le=100),
+               status: Optional[str] = None, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    q = db.query(ExtractedOrder).filter(ExtractedOrder.bot_id == bot_id)
+    if status:
+        q = q.filter(ExtractedOrder.status == status)
+    total = q.count()
+    rows = q.order_by(desc(ExtractedOrder.created_at)).offset((page - 1) * limit).limit(limit).all()
+    return {"page": page, "limit": limit, "total": total, "orders": [order_to_dict(r) for r in rows]}
+
+
+@app.put("/api/bots/{bot_id}/orders/{order_id}")
+def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
+                 user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    order = db.query(ExtractedOrder).filter(ExtractedOrder.id == order_id,
+                                            ExtractedOrder.bot_id == bot_id).first()
+    if not order:
+        raise HTTPException(404, "Order not found")
+    order.status = body.status
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/bots/{bot_id}/orders/export")
+def export_orders(bot_id: int, user_id: int = Depends(security.get_current_user),
+                  db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    path = os.path.join(config.UPLOAD_DIR, str(bot_id), "orders.xlsx")
+    if not os.path.exists(path):
+        raise HTTPException(404, "No orders exported yet")
+    return FileResponse(path, filename="orders.xlsx",
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------- ANALYTICS ----------
+
+@app.get("/api/bots/{bot_id}/analytics")
+def analytics(bot_id: int, range: int = Query(7, ge=1, le=365),
+              user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    since = datetime.utcnow() - timedelta(days=range)
+
+    total_conv = db.query(func.count(Message.id)).filter(Message.bot_id == bot_id, Message.created_at >= since).scalar()
+    unique_users = db.query(func.count(func.distinct(Message.user_id))).filter(Message.bot_id == bot_id, Message.created_at >= since).scalar()
+    avg_rt = db.query(func.avg(Message.response_time)).filter(Message.bot_id == bot_id, Message.created_at >= since).scalar()
+    total_orders = db.query(func.count(ExtractedOrder.id)).filter(ExtractedOrder.bot_id == bot_id, ExtractedOrder.created_at >= since).scalar()
+    orders_extracted = db.query(func.count(ExtractedOrder.id)).filter(ExtractedOrder.bot_id == bot_id, ExtractedOrder.status != "incomplete", ExtractedOrder.created_at >= since).scalar()
+
+    model_rows = (db.query(Message.model_used, func.count(Message.id))
+                  .filter(Message.bot_id == bot_id, Message.created_at >= since)
+                  .group_by(Message.model_used).all())
+    total_m = sum(c for _, c in model_rows) or 1
+    success = sum(c for m, c in model_rows if m in ("flash-3.6", "flash-3.5-lite"))
+
+    per_day = (db.query(func.date(Message.created_at), func.count(Message.id))
+               .filter(Message.bot_id == bot_id, Message.created_at >= since)
+               .group_by(func.date(Message.created_at)).order_by(func.date(Message.created_at)).all())
+    orders_day = (db.query(func.date(ExtractedOrder.created_at), func.count(ExtractedOrder.id))
+                  .filter(ExtractedOrder.bot_id == bot_id, ExtractedOrder.created_at >= since)
+                  .group_by(func.date(ExtractedOrder.created_at)).order_by(func.date(ExtractedOrder.created_at)).all())
+
+    return {
+        "total_conversations": total_conv,
+        "unique_users": unique_users,
+        "avg_response_time": round(float(avg_rt), 2) if avg_rt else 0,
+        "total_orders": total_orders,
+        "orders_extracted": orders_extracted,
+        "model_success_rate": round(success / total_m * 100, 1),
+        "conversations_per_day": [{"date": str(d), "count": c} for d, c in per_day],
+        "orders_per_day": [{"date": str(d), "count": c} for d, c in orders_day],
+    }
+
+
+# ---------- TELEGRAM WEBHOOK ----------
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
+    message = payload.get("message") or {}
+    text = (message.get("text") or "").strip()
+    if not text:
+        return {"ok": True}
+    chat_id = message.get("chat", {}).get("id")
+    from_user = message.get("from", {})
+    uid = str(from_user.get("id", ""))
+    customer_name = " ".join(filter(None, [from_user.get("first_name"), from_user.get("last_name")])) or None
+    token = config.TELEGRAM_TOKEN
+
+    if text.lower().startswith("/start"):
+        arg = text.split(maxsplit=1)[1] if len(text.split(maxsplit=1)) > 1 else ""
+        if arg.startswith("bot_"):
+            try:
+                target_id = int(arg[4:])
+            except ValueError:
+                target_id = None
+            bot = (db.query(Bot).filter(Bot.id == target_id, Bot.status == "active").first()
+                   if target_id else None)
+            if bot:
+                existing = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
+                if existing:
+                    existing.bot_id = bot.id
+                else:
+                    db.add(BotChat(bot_id=bot.id, chat_id=str(chat_id)))
+                db.commit()
+                try:
+                    telegram_api.send_message(token, chat_id, f"Connected to {bot.name}. How can I help you?")
+                except Exception:
+                    pass
+                return {"ok": True}
+        try:
+            telegram_api.send_message(token, chat_id, "Welcome! Please use a bot link shared by the business to start.")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
+    if not binding:
+        try:
+            telegram_api.send_message(token, chat_id, "Please start via a bot link shared by the business.")
+        except Exception:
+            pass
+        return {"ok": True}
+    bot = db.query(Bot).filter(Bot.id == binding.bot_id, Bot.status == "active").first()
+    if not bot:
+        return {"ok": True}
+    bot_id = bot.id
+    api_key = security.decrypt(bot.api_key_encrypted)
+
+    history_rows = (db.query(Message)
+                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id))
+                    .order_by(desc(Message.created_at)).limit(5).all())
+    history = []
+    for r in reversed(history_rows):
+        history.append({"role": "user", "text": r.message_text})
+        history.append({"role": "model", "text": r.response_text})
+
+    files = (db.query(UploadedFile)
+             .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
+    file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)
+
+    start = time.time()
+    try:
+        reply, model_used = gemini_service.chat_with_fallback(api_key, bot.system_prompt, file_context, history, text)
+    except Exception:
+        reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
+    response_time = round(time.time() - start, 2)
+
+    try:
+        telegram_api.send_message(token, chat_id, reply)
+    except Exception:
+        pass
+
+    existing = (db.query(ExtractedOrder)
+                .join(Message, Message.id == ExtractedOrder.message_id)
+                .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id),
+                        ExtractedOrder.status == "pending")
+                .order_by(desc(ExtractedOrder.created_at)).first())
+    existing_summary = None
+    if existing:
+        existing_summary = {
+            "products": existing.products, "total_price": float(existing.total_price) if existing.total_price else None,
+            "delivery_address": existing.delivery_address, "customer_phone": existing.customer_phone,
+            "special_requests": existing.special_requests,
+        }
+    try:
+        order = gemini_service.extract_order(api_key, text, history, existing_summary)
+    except Exception:
+        order = None
+
+    msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id), message_text=text,
+                  response_text=reply, extracted_data=order, response_time=response_time,
+                  model_used=model_used)
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    edit_intent = any(k in text.lower() for k in EDIT_KEYWORDS)
+    if order and existing and (order.get("modify") or edit_intent):
+        existing.products = order["products"]
+        existing.total_price = order.get("total_price")
+        existing.delivery_address = order.get("delivery_address")
+        existing.customer_phone = order.get("customer_phone")
+        existing.special_requests = order.get("special_requests")
+        existing.status = "pending" if order.get("total_price") is not None else "incomplete"
+        # ponytail: orders.xlsx append-only; excel row for modified order not updated in place
+        db.commit()
+    elif order:
+        status = "pending" if order.get("total_price") is not None else "incomplete"
+        db.add(ExtractedOrder(
+            bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
+            customer_name=order.get("customer_name") or customer_name,
+            products=order["products"], total_price=order.get("total_price"),
+            delivery_address=order.get("delivery_address"), customer_phone=order.get("customer_phone"),
+            special_requests=order.get("special_requests"), status=status,
+        ))
+        db.commit()
+        try:
+            excel_service.append_order(bot_id, order, uid, status)
+        except Exception:
+            pass
+
+    return {"ok": True}
+
+
+@app.on_event("startup")
+def setup_webhook():
+    if config.TELEGRAM_TOKEN and config.BASE_URL.startswith("https://"):
+        try:
+            telegram_api.set_webhook(config.TELEGRAM_TOKEN, f"{config.BASE_URL}/api/telegram/webhook")
+        except Exception:
+            pass
+    if config.TELEGRAM_TOKEN and not config.TELEGRAM_BOT_USERNAME:
+        try:
+            config.TELEGRAM_BOT_USERNAME = telegram_api.get_me(config.TELEGRAM_TOKEN).get("username", "")
+        except Exception:
+            pass
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
