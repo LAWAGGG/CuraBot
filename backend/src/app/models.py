@@ -77,9 +77,10 @@ class ExtractedOrder(Base):
     customer_phone = Column(String(50))
     special_requests = Column(Text)
     status = Column(
-        Enum("pending", "incomplete", "confirmed", "shipped", "completed"),
+        Enum("pending", "incomplete", "confirmed", "shipped", "completed", "rejected"),
         default="pending", index=True,
     )
+    rejection_reason = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     bot = relationship("Bot", back_populates="orders")

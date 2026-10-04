@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -92,6 +93,24 @@ ORDER_KEYWORDS = ("pesan", "order", "pesanan", "beli", "pesenan")
 EDIT_KEYWORDS = ("ubah", "ganti", "edit", "kurangi", "tambah", "tidak jadi", "tdk jadi", "batal", "cancel", "hapus", "revisi", "minus", "plus", "kurang", "tambahin", "ga jadi", "gak jadi", "nggak jadi")
 
 
+def _products_known(products: list, knowledge: str) -> bool:
+    k = (knowledge or "").lower()
+    if not k.strip():
+        # tanpa katalog, order tidak bisa divalidasi -> tolak
+        return False
+    for p in products:
+        name = str(p.get("product_name", "")).lower()
+        if not name:
+            return False
+        if name in k:
+            continue
+        words = [w for w in re.findall(r"[a-z0-9]+", name) if len(w) > 3]
+        if words and all(w in k for w in words):
+            continue
+        return False
+    return True
+
+
 def extract_order(api_key: str, user_text: str, history: list, existing_order: dict = None, knowledge: str = ""):
     lowered = user_text.lower()
     if not any(k in lowered for k in ORDER_KEYWORDS) and not any(k in lowered for k in EDIT_KEYWORDS):
@@ -110,6 +129,7 @@ RULES:
 - ALWAYS fill "price" for each product from the knowledge base when the product is listed there. Never leave price null if the knowledge base has it.
 - Compute "total_price" as the sum of (price * quantity) for all products when all prices are known.
 - "customer_name" should be the real name the customer gave (not their username).
+- "product_name" MUST be an actual item from the knowledge base. If the customer names something vague or unknown (e.g. "menu", "makanan") that is not in the knowledge base, return {"is_order": false} instead.
 If no order intent: {"is_order": false}
 Order JSON format:
 {"is_order": true, "modify": false, "customer_name": str|null, "products": [{"product_name": str, "quantity": int, "price": number}], "total_price": number|null, "delivery_address": str|null, "customer_phone": str|null, "special_requests": str|null}
@@ -120,6 +140,9 @@ Output ONLY raw JSON, no markdown."""
             raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             data = json.loads(raw)
             if data.get("is_order") and data.get("products"):
+                if not _products_known(data["products"], kb):
+                    # ponytail: produk tidak ada di katalog (KB kosong / nama ngarang) -> tolak order
+                    return None
                 return data
             return None
         except Exception as e:

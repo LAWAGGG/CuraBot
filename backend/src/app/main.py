@@ -86,6 +86,7 @@ def order_to_dict(o: ExtractedOrder) -> dict:
         "customer_phone": o.customer_phone,
         "special_requests": o.special_requests,
         "status": o.status,
+        "rejection_reason": o.rejection_reason,
         "created_at": str(o.created_at),
         "updated_at": str(o.updated_at),
     }
@@ -291,7 +292,29 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
     if not order:
         raise HTTPException(404, "Order not found")
     order.status = body.status
+    order.rejection_reason = body.reason if body.status == "rejected" else None
     db.commit()
+
+    # webhook ke customer: kabari perubahan status order
+    msg_row = db.query(Message).filter(Message.id == order.message_id).first() if order.message_id else None
+    if msg_row and msg_row.chat_id:
+        status_text = {
+            "pending": "menunggu konfirmasi penjual",
+            "incomplete": "menunggu kelengkapan data pesanan",
+            "confirmed": "sudah dikonfirmasi dan sedang diproses",
+            "shipped": "sudah dikirim",
+            "completed": "sudah selesai",
+            "rejected": "ditolak",
+        }.get(body.status, body.status)
+        note = f"Halo! Status pesanan Anda saat ini: {status_text}."
+        if body.status == "rejected":
+            note += f"\nAlasan: {body.reason or '-'}\nSilakan hubungi kami jika ingin memesan ulang."
+        elif body.status == "pending":
+            note += " Mohon tunggu, kami akan mengabari Anda lagi setelah ada update."
+        try:
+            telegram_api.send_message(config.TELEGRAM_TOKEN, msg_row.chat_id, note)
+        except Exception:
+            pass
     return {"ok": True}
 
 
@@ -411,9 +434,26 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
              .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
     file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)
 
+    # status order terakhir untuk konteks jawaban AI
+    latest_order = (db.query(ExtractedOrder)
+                    .join(Message, Message.id == ExtractedOrder.message_id)
+                    .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id))
+                    .order_by(desc(ExtractedOrder.created_at)).first())
+    system_prompt = bot.system_prompt
+    if latest_order:
+        guidance = {
+            "pending": "katakan pesanan sedang menunggu konfirmasi penjual, minta customer menunggu, akan diinformasikan lagi.",
+            "incomplete": "katakan data pesanan belum lengkap, minta customer melengkapi (nama, HP, alamat, jumlah).",
+            "confirmed": "katakan pesanan sudah dikonfirmasi dan sedang diproses.",
+            "shipped": "katakan pesanan sudah dikirim.",
+            "completed": "katakan pesanan sudah selesai, tawarkan belanja lagi.",
+            "rejected": f"katakan pesanan ditolak. Alasan: {latest_order.rejection_reason or '-'}. Tawarkan pesan ulang.",
+        }.get(latest_order.status, "")
+        system_prompt += f"\n\nINFO STATUS PESANAN CUSTOMER SAAT INI: status='{latest_order.status}'. Jika customer bertanya status pesanan, {guidance}"
+
     start = time.time()
     try:
-        reply, model_used = gemini_service.chat_with_fallback(api_key, bot.system_prompt, file_context, history, text)
+        reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
     except Exception:
         reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
     response_time = round(time.time() - start, 2)
@@ -437,7 +477,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
             "special_requests": existing.special_requests,
         }
     try:
-        order = gemini_service.extract_order(api_key, text, history, existing_summary, file_context)
+        order = gemini_service.extract_order(api_key, text, history, existing_summary, (file_context or "") + "\n" + (bot.system_prompt or ""))
     except Exception:
         order = None
 

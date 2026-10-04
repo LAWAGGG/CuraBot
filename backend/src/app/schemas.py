@@ -33,4 +33,5 @@ class BotUpdateIn(BaseModel):
 
 
 class OrderStatusIn(BaseModel):
-    status: str = Field(pattern="^(pending|incomplete|confirmed|shipped|completed)$")
+    status: str = Field(pattern="^(pending|incomplete|confirmed|shipped|completed|rejected)$")
+    reason: Optional[str] = None
