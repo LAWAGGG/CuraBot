@@ -2,6 +2,8 @@ import { Route, Routes } from 'react-router-dom'
 
 import AppShell from '@/components/AppShell'
 import { RequireAuth } from '@/lib/auth'
+import BotLayout from '@/pages/BotLayout'
+import BotOverview from '@/pages/BotOverview'
 import BotWizard from '@/pages/BotWizard'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
@@ -30,8 +32,8 @@ export default function App() {
         }
       >
         <Route path="/" element={<Dashboard />} />
-        <Route path="/bots/:id" element={<Placeholder title="Detail Bot" />}>
-          <Route index element={<Placeholder title="Ringkasan" />} />
+        <Route path="/bots/:id" element={<BotLayout />}>
+          <Route index element={<BotOverview />} />
           <Route path="percakapan" element={<Placeholder title="Percakapan" />} />
           <Route path="pesanan" element={<Placeholder title="Pesanan" />} />
           <Route path="berkas" element={<Placeholder title="Berkas" />} />
