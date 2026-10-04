@@ -1,3 +1,6 @@
 rules/
 postman/
 uploads/
+docs/
+.opencode/
+skills-lock.json

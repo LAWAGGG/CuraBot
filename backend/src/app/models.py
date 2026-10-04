@@ -29,6 +29,8 @@ class Bot(Base):
     telegram_bot_name = Column(String(100), nullable=False, index=True)
     telegram_link = Column(String(200), nullable=False)
     status = Column(Enum("active", "inactive"), default="active")
+    payment_info = Column(Text)
+    qris_image_path = Column(String(500))
     created_at = Column(DateTime, server_default=func.now())
     user = relationship("User", back_populates="bots")
     files = relationship("UploadedFile", back_populates="bot")
@@ -80,6 +82,7 @@ class ExtractedOrder(Base):
         default="pending", index=True,
     )
     rejection_reason = Column(Text)
+    payment_proof_path = Column(String(500))
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     bot = relationship("Bot", back_populates="orders")

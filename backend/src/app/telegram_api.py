@@ -26,6 +26,30 @@ def delete_webhook(token: str):
     return _call(token, "deleteWebhook")
 
 
+def get_file(token: str, file_id: str) -> dict:
+    return _call(token, "getFile", file_id=file_id)
+
+
+def download_file(token: str, file_path: str) -> bytes:
+    r = requests.get(f"https://api.telegram.org/file/bot{token}/{file_path}", timeout=20)
+    r.raise_for_status()
+    return r.content
+
+
+def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
+    with open(photo_path, "rb") as f:
+        r = requests.post(
+            f"{BASE}/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption[:1000]},
+            files={"photo": f},
+            timeout=30,
+        )
+    data = r.json()
+    if not data.get("ok"):
+        raise ValueError(data.get("description", "Telegram API error"))
+    return data["result"]
+
+
 def send_message(token: str, chat_id, text: str):
     md = text.replace("**", "*")
     try:

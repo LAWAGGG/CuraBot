@@ -9,6 +9,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Que
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from pypdf import PdfReader
@@ -20,9 +21,12 @@ from .database import get_db
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat
 
 app = FastAPI(title="CuraBot API")
+os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[config.FRONTEND_URL],
+    allow_origins=config.CORS_ORIGINS,
+    allow_origin_regex=config.CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,6 +72,8 @@ def public_bot(bot: Bot) -> dict:
         "system_prompt": bot.system_prompt,
         "telegram_bot_name": bot.telegram_bot_name,
         "telegram_link": bot.telegram_link,
+        "payment_info": bot.payment_info,
+        "qris_image_url": f"{config.BASE_URL}/uploads/{bot.id}/{os.path.basename(bot.qris_image_path)}" if bot.qris_image_path else None,
         "status": bot.status,
         "created_at": str(bot.created_at),
     }
@@ -86,6 +92,7 @@ def order_to_dict(o: ExtractedOrder) -> dict:
         "customer_phone": o.customer_phone,
         "status": o.status,
         "rejection_reason": o.rejection_reason,
+        "payment_proof_url": f"{config.BASE_URL}/uploads/{o.bot_id}/{os.path.basename(o.payment_proof_path)}" if o.payment_proof_path else None,
         "created_at": str(o.created_at),
         "updated_at": str(o.updated_at),
     }
@@ -143,6 +150,7 @@ def create_bot(body: schemas.BotCreateIn, user_id: int = Depends(security.get_cu
     bot = Bot(
         user_id=user_id, name=body.name, system_prompt=body.system_prompt,
         api_key_encrypted=security.encrypt(body.api_key),
+        payment_info=body.payment_info,
         telegram_bot_name=config.TELEGRAM_BOT_USERNAME,
         telegram_link="",
     )
@@ -178,6 +186,8 @@ def update_bot(bot_id: int, body: schemas.BotUpdateIn, user_id: int = Depends(se
         bot.system_prompt = body.system_prompt
     if body.api_key is not None:
         bot.api_key_encrypted = security.encrypt(body.api_key)
+    if body.payment_info is not None:
+        bot.payment_info = body.payment_info
     db.commit()
     db.refresh(bot)
     return public_bot(bot)
@@ -219,6 +229,26 @@ def upload_file(bot_id: int = Form(...), file: UploadFile = File(...),
     db.commit()
     db.refresh(row)
     return {"id": row.id, "filename": row.filename, "file_size": row.file_size, "extracted": bool(text)}
+
+
+@app.post("/api/bots/{bot_id}/qris", status_code=201)
+def upload_qris(bot_id: int, file: UploadFile = File(...),
+                user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    bot = get_bot_or_404(db, user_id, bot_id)
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png"):
+        raise HTTPException(400, "Only JPG/PNG allowed")
+    data = file.file.read()
+    if len(data) > config.MAX_FILE_SIZE:
+        raise HTTPException(400, "File too large")
+    dest_dir = os.path.join(config.UPLOAD_DIR, str(bot_id))
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, f"qris_{int(time.time())}{ext}")
+    with open(dest, "wb") as f:
+        f.write(data)
+    bot.qris_image_path = dest
+    db.commit()
+    return {"ok": True, "qris_image_url": f"{config.BASE_URL}/uploads/{bot_id}/{os.path.basename(dest)}"}
 
 
 @app.get("/api/files/{bot_id}")
@@ -310,6 +340,16 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
             note += f"\nAlasan: {body.reason or '-'}\nSilakan hubungi kami jika ingin memesan ulang."
         elif body.status == "pending":
             note += " Mohon tunggu, kami akan mengabari Anda lagi setelah ada update."
+        elif body.status == "incomplete":
+            missing = []
+            if not order.customer_phone:
+                missing.append("nomor handphone")
+            if not order.delivery_address:
+                missing.append("alamat pengiriman")
+            if not (order.products or []):
+                missing.append("daftar produk")
+            detail = ", ".join(missing) if missing else "data pesanan"
+            note += f"\nMohon lengkapi data berikut agar pesanan bisa diproses: {detail}."
         try:
             telegram_api.send_message(config.TELEGRAM_TOKEN, msg_row.chat_id, note)
         except Exception:
@@ -387,6 +427,37 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
                 db.commit()
         return {"ok": True}
     text = (message.get("text") or "").strip()
+    # customer mengirim foto bukti pembayaran -> simpan & teruskan ke dashboard, status TIDAK diubah AI
+    photos = message.get("photo") or []
+    if photos:
+        chat_id = message.get("chat", {}).get("id")
+        binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
+        if binding:
+            bot = db.query(Bot).filter(Bot.id == binding.bot_id, Bot.status == "active").first()
+            if bot:
+                try:
+                    fid = photos[-1]["file_id"]
+                    info = telegram_api.get_file(config.TELEGRAM_TOKEN, fid)
+                    data = telegram_api.download_file(config.TELEGRAM_TOKEN, info["file_path"])
+                    dest_dir = os.path.join(config.UPLOAD_DIR, str(bot.id))
+                    os.makedirs(dest_dir, exist_ok=True)
+                    dest = os.path.join(dest_dir, f"proof_{int(time.time())}.jpg")
+                    with open(dest, "wb") as f:
+                        f.write(data)
+                    latest = (db.query(ExtractedOrder)
+                              .join(Message, Message.id == ExtractedOrder.message_id)
+                              .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                      ExtractedOrder.status.in_(["pending", "incomplete"]))
+                              .order_by(desc(ExtractedOrder.created_at)).first())
+                    if latest:
+                        latest.payment_proof_path = dest
+                        db.commit()
+                    telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
+                                              "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
+                except Exception:
+                    telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
+                                              "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
+        return {"ok": True}
     if not text:
         return {"ok": True}
     chat_id = message.get("chat", {}).get("id")
@@ -456,19 +527,42 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     if latest_order:
         guidance = {
             "pending": "katakan pesanan sedang menunggu konfirmasi penjual, minta customer menunggu, akan diinformasikan lagi.",
-            "incomplete": "katakan data pesanan belum lengkap, minta customer melengkapi (nama, HP, alamat, jumlah).",
+            "incomplete": "katakan data pesanan belum lengkap, minta customer melengkapi data yang kurang saja (lihat detail di bawah).",
             "confirmed": "katakan pesanan sudah dikonfirmasi dan sedang diproses.",
             "shipped": "katakan pesanan sudah dikirim.",
             "completed": "katakan pesanan sudah selesai, tawarkan belanja lagi.",
             "rejected": f"katakan pesanan ditolak. Alasan: {latest_order.rejection_reason or '-'}. Tawarkan pesan ulang.",
         }.get(latest_order.status, "")
+        if latest_order.status == "incomplete":
+            missing = []
+            if not latest_order.customer_phone:
+                missing.append("nomor handphone")
+            # alamat hanya ditanya jika layanan delivery tersedia dan alamat belum diisi; jika "Onsite", jangan tanya
+            if not latest_order.delivery_address:
+                missing.append("alamat pengiriman (hanya untuk pengiriman/delivery; jika pesan di tempat, isi 'Onsite')")
+            if not (latest_order.products or []):
+                missing.append("daftar produk")
+            if latest_order.delivery_address and latest_order.delivery_address.strip().lower() == "onsite":
+                missing = [m for m in missing if not m.startswith("alamat")]
+            guidance += f" Data yang masih kurang: {', '.join(missing) if missing else 'tidak ada — data sudah lengkap'}."
         system_prompt += f"\n\nINFO STATUS PESANAN CUSTOMER SAAT INI: status='{latest_order.status}'. Jika customer bertanya status pesanan, {guidance}"
+        detail = {"products": latest_order.products, "total_price": float(latest_order.total_price) if latest_order.total_price else None,
+                  "delivery_address": latest_order.delivery_address, "customer_phone": latest_order.customer_phone}
+        system_prompt += (f"\n\nDETAIL PESANAN CUSTOMER: {detail}. Jika customer bertanya apa saja pesanannya, "
+                          "makan di tempat atau tidak, harga, atau data pesanan lainnya, JAWAB LANGSUNG dari data ini, jangan hanya menyebutkan status.")
         if latest_order.status in ("rejected", "completed", "shipped"):
             system_prompt += ("\n\nPENTING: Jangan mencatat pesanan baru kecuali customer secara eksplisit menyebut produk yang ingin dipesan ulang. "
                               "Kalau customer hanya menanggapi/merespon pesan, balas singkat saja tanpa mencatat pesanan.")
     system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum menyatakan pesanan sudah dicatat/diubah, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
                       "Baru setelah customer mengiyakan, katakan pesanan sudah tercatat/terupdate. "
                       "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi.")
+    if bot.payment_info and latest_order and latest_order.products and latest_order.total_price is not None \
+            and latest_order.status in ("pending", "incomplete"):
+        system_prompt += ("\n\nTAHAP PEMBAYARAN: Pesanan customer sudah lengkap. Jika customer menanyakan cara bayar/pembayaran/qris/transfer, "
+                          "sampaikan instruksi berikut persis dari penjual: " + bot.payment_info)
+        if not latest_order.payment_proof_path:
+            system_prompt += ("\n\nBUKTI BAYAR: Jika customer mengatakan sudah membayar/transfer tetapi belum mengirimkan bukti, "
+                              "WAJIB minta customer mengirimkan foto/screenshot bukti pembayaran terlebih dahulu sebelum pesanan diproses.")
 
     start = time.time()
     try:
@@ -481,6 +575,13 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
         telegram_api.send_message(token, chat_id, reply)
     except Exception:
         pass
+
+    # customer minta qris & ada gambar QRIS -> kirim gambarnya
+    if bot.qris_image_path and "qris" in text.lower():
+        try:
+            telegram_api.send_photo(token, chat_id, bot.qris_image_path, caption="QRIS pembayaran")
+        except Exception:
+            pass
 
     # ponytail: sertakan "incomplete" -> order yang masih dilengkapi tidak dobel
     existing = (db.query(ExtractedOrder)
@@ -526,7 +627,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
         existing.customer_phone = order.get("customer_phone") or existing.customer_phone
         if not existing.customer_name and order.get("customer_name"):
             existing.customer_name = order.get("customer_name")
-        existing.status = "pending" if existing.total_price is not None else "incomplete"
+        # ponytail: status TIDAK diubah dari sisi chat — hanya creator yang boleh mengubah status order
         db.commit()
     elif order and order.get("customer_confirmed"):
         status = "pending" if order.get("total_price") is not None else "incomplete"

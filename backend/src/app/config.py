@@ -14,7 +14,16 @@ JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+
+# Comma-separated list; defaults to FRONTEND_URL when unset/empty.
+_cors_origins_env = os.getenv("CORS_ORIGINS") or FRONTEND_URL
+CORS_ORIGINS = [o.strip().rstrip("/") for o in _cors_origins_env.split(",") if o.strip()]
+# Dev-friendly pattern: any localhost/127.0.0.1 port and any Cloudflare quick tunnel.
+CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX") or (
+    r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+    r"|^https://[a-z0-9-]+\.trycloudflare\.com$"
+)
 
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(25 * 1024 * 1024)))
