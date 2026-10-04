@@ -2,6 +2,7 @@ import { Route, Routes } from 'react-router-dom'
 
 import AppShell from '@/components/AppShell'
 import { RequireAuth } from '@/lib/auth'
+import BotWizard from '@/pages/BotWizard'
 import Dashboard from '@/pages/Dashboard'
 import Login from '@/pages/Login'
 import NotFound from '@/pages/NotFound'
@@ -17,7 +18,7 @@ export default function App() {
         path="/bots/new"
         element={
           <RequireAuth>
-            <Placeholder title="Buat Bot" description="Wizard pembuatan bot akan hadir di sini." />
+            <BotWizard />
           </RequireAuth>
         }
       />
