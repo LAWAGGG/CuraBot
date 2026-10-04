@@ -14,7 +14,10 @@ Telegram. Fokus utama: **wizard pembuatan bot langkah demi langkah** yang
 menghasilkan system prompt sesuai keinginan pengguna, disusul halaman pengelolaan
 (berkas, pesanan, percakapan, analitik, pengaturan).
 
-Seluruh bahasa antarmuka, dokumen, dan kode pesan memakai **Bahasa Indonesia**.
+Seluruh bahasa antarmuka dan dokumen memakai **Bahasa Indonesia**. Kode,
+komentar, dan pesan internal (console, commit) memakai **Bahasa Inggris**.
+Pesan galat yang tampil ke pengguna tetap Bahasa Indonesia; pesan galat backend
+(Inggris) dipetakan ke padanan Indonesia dengan fallback generik.
 
 ---
 
@@ -143,7 +146,8 @@ Catatan label model: `flash-3.6` (utama), `flash-3.5-lite` (cadangan), `none` (g
 ```
 src/
   lib/
-    api.js         # instance axios, cache, dedup, abort, helper unduh blob
+    api.js         # instance axios, cache, dedup, abort, helper unduh blob,
+                   # pemetaan pesan galat backend (Inggris) → Indonesia
     auth.jsx       # AuthProvider, useAuth, penyimpanan token, RequireAuth
     prompt.js      # generator system prompt dari jawaban wizard (fungsi murni)
     utils.js       # cn(), format rupiah/tanggal/ukuran, validasi URL
@@ -308,8 +312,8 @@ Backend mengharuskan `bot_id` ada sebelum unggah berkas, sehingga urutannya:
    dan kartu checklist "Lengkapi katalog di tab Berkas".
 4. `localStorage` draf dibersihkan setelah sukses.
 
-Penanganan galat: 422/409 dari backend ditampilkan sebagai pesan Indonesia dari
-respons `message`; tombol Coba Lagi tanpa kehilangan isian.
+Penanganan galat: kode 422/409 dari backend dipetakan ke pesan Indonesia yang
+sesuai; tombol Coba Lagi tanpa kehilangan isian.
 
 ---
 
@@ -426,7 +430,8 @@ respons `message`; tombol Coba Lagi tanpa kehilangan isian.
 - **Pemuatan:** skeleton untuk daftar/kartu; tombol memakai spinner + nonaktif
   saat mengirim; bilah progres untuk unggahan.
 - **Galat:** toast sonner untuk galat aksi; galat inline pada field form; pesan
-  dari backend (Bahasa Indonesia) diprioritaskan; opsi "Coba Lagi".
+  galat backend (Inggris) dipetakan ke Bahasa Indonesia (peta pesan umum +
+  fallback generik); opsi "Coba Lagi".
 - **Kosong:** komponen `EmptyState` dengan ilustrasi SVG line-art custom
   (bukan gambar stok/AI) + CTA relevan.
 - **Konfirmasi:** dialog untuk aksi merusak (hapus bot/berkas, tolak pesanan).
@@ -478,5 +483,6 @@ respons `message`; tombol Coba Lagi tanpa kehilangan isian.
    cache; tidak ada polling.
 4. Tampilan sesuai DESIGN.md (Green Beach, Inter, irama 8px, kontras AA) dan
    responsif dari 320px.
-5. Bahasa antarmuka seluruhnya Indonesia.
+5. Bahasa antarmuka seluruhnya Indonesia; kode, komentar, dan pesan internal
+   berbahasa Inggris.
 6. Lint + build bersih.
