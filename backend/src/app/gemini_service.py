@@ -1,6 +1,8 @@
 import json
+import os
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from . import config
 
 _client = None
@@ -11,10 +13,30 @@ def _get_client(api_key: str) -> genai.Client:
     if _client is None or getattr(_client, "_api_key", None) != api_key:
         _client = genai.Client(
             api_key=api_key,
-            http_options=types.HttpOptions(timeout=20_000),
+            http_options=types.HttpOptions(
+                timeout=20_000,
+                # ponytail: no SDK retry -> no "stuck" on RPD; fallback handled in app
+                retry_options=types.HttpRetryOptions(attempts=1),
+            ),
         )
         _client._api_key = api_key
     return _client
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    if isinstance(e, APIError):
+        if e.code in (429, 403, 404):
+            # 404: nama model tidak tersedia utk key ini -> coba model berikutnya
+            return True
+    msg = str(e).upper()
+    return "RESOURCE_EXHAUSTED" in msg or ("RATE" in msg and "LIMIT" in msg) or "NOT_FOUND" in msg
+
+
+def _model_chain():
+    chain = [(config.GEMINI_PRIMARY, "flash-3.6"), (config.GEMINI_FALLBACK, "flash-3.5-lite")]
+    extra = [m.strip() for m in os.getenv("GEMINI_EXTRA_FALLBACKS", "").split(",") if m.strip()]
+    chain += [(m, m) for m in extra]
+    return chain
 
 
 def _chat_reply(api_key: str, model_name: str, system_instruction: str,
@@ -33,7 +55,7 @@ def _chat_reply(api_key: str, model_name: str, system_instruction: str,
             system_instruction=system_instruction,
             temperature=temp,
             max_output_tokens=max_tokens,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            # ponytail: thinking_budget=0 ditolak API (400) di gemini-3.x -> hilangkan
         ),
     )
     resp = chat.send_message(message)
@@ -51,10 +73,13 @@ def chat_with_fallback(api_key: str, system_prompt: str, file_context: str,
         "politely refuse in one short sentence and redirect to your role. Keep answers concise "
         "to save tokens."
     )
-    for model, label in ((config.GEMINI_PRIMARY, "flash-3.6"), (config.GEMINI_FALLBACK, "flash-3.5-lite")):
+    for model, label in _model_chain():
         try:
             return _chat_reply(api_key, model, sys, history, user_text, 2048, 0.7), label
-        except Exception:
+        except Exception as e:
+            if not _is_rate_limit(e):
+                # bukan limit RPD: error nyata (bad prompt, dsb) -> stop, jangan buang kuota model lain
+                raise
             continue
     return "Sorry, there is a temporary issue. Please try again in a moment.", "none"
 
@@ -79,7 +104,7 @@ If no order intent: {"is_order": false}
 Order JSON format:
 {"is_order": true, "modify": false, "customer_name": str|null, "products": [{"product_name": str, "quantity": int, "price": number}], "total_price": number|null, "delivery_address": str|null, "customer_phone": str|null, "special_requests": str|null}
 Output ONLY raw JSON, no markdown."""
-    for model in (config.GEMINI_PRIMARY, config.GEMINI_FALLBACK):
+    for model, _label in _model_chain():
         try:
             raw = _chat_reply(api_key, model, system, [], prompt, 1024, 0.2)
             raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -87,6 +112,9 @@ Output ONLY raw JSON, no markdown."""
             if data.get("is_order") and data.get("products"):
                 return data
             return None
-        except Exception:
+        except Exception as e:
+            # JSON parse / empty reply: coba model berikutnya juga. Error API non-limit: stop.
+            if isinstance(e, APIError) and not _is_rate_limit(e):
+                raise
             continue
     return None
