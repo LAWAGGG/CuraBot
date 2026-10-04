@@ -16,7 +16,6 @@ from docx import Document
 from openpyxl import load_workbook
 
 from . import config, security, schemas, telegram_api, gemini_service, excel_service
-from .gemini_service import EDIT_KEYWORDS
 from .database import get_db
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat
 
@@ -424,10 +423,11 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     except Exception:
         pass
 
+    # ponytail: sertakan "incomplete" -> order yang masih dilengkapi tidak dobel
     existing = (db.query(ExtractedOrder)
                 .join(Message, Message.id == ExtractedOrder.message_id)
                 .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id),
-                        ExtractedOrder.status == "pending")
+                        ExtractedOrder.status.in_(["pending", "incomplete"]))
                 .order_by(desc(ExtractedOrder.created_at)).first())
     existing_summary = None
     if existing:
@@ -437,7 +437,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
             "special_requests": existing.special_requests,
         }
     try:
-        order = gemini_service.extract_order(api_key, text, history, existing_summary)
+        order = gemini_service.extract_order(api_key, text, history, existing_summary, file_context)
     except Exception:
         order = None
 
@@ -448,15 +448,16 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(msg)
 
-    edit_intent = any(k in text.lower() for k in EDIT_KEYWORDS)
-    if order and existing and (order.get("modify") or edit_intent):
-        existing.products = order["products"]
-        existing.total_price = order.get("total_price")
-        existing.delivery_address = order.get("delivery_address")
-        existing.customer_phone = order.get("customer_phone")
-        existing.special_requests = order.get("special_requests")
-        existing.status = "pending" if order.get("total_price") is not None else "incomplete"
-        # ponytail: orders.xlsx append-only; excel row for modified order not updated in place
+    if order and existing:
+        # ponytail: 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
+        existing.products = order.get("products") or existing.products
+        existing.total_price = order.get("total_price") if order.get("total_price") is not None else existing.total_price
+        existing.delivery_address = order.get("delivery_address") or existing.delivery_address
+        existing.customer_phone = order.get("customer_phone") or existing.customer_phone
+        existing.special_requests = order.get("special_requests") or existing.special_requests
+        if not existing.customer_name and order.get("customer_name"):
+            existing.customer_name = order.get("customer_name")
+        existing.status = "pending" if existing.total_price is not None else "incomplete"
         db.commit()
     elif order:
         status = "pending" if order.get("total_price") is not None else "incomplete"
