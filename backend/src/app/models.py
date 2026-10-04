@@ -75,7 +75,6 @@ class ExtractedOrder(Base):
     total_price = Column(Numeric(10, 2))
     delivery_address = Column(Text)
     customer_phone = Column(String(50))
-    special_requests = Column(Text)
     status = Column(
         Enum("pending", "incomplete", "confirmed", "shipped", "completed", "rejected"),
         default="pending", index=True,

@@ -84,7 +84,6 @@ def order_to_dict(o: ExtractedOrder) -> dict:
         "total_price": float(o.total_price) if o.total_price is not None else None,
         "delivery_address": o.delivery_address,
         "customer_phone": o.customer_phone,
-        "special_requests": o.special_requests,
         "status": o.status,
         "rejection_reason": o.rejection_reason,
         "created_at": str(o.created_at),
@@ -373,6 +372,20 @@ def analytics(bot_id: int, range: int = Query(7, ge=1, le=365),
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     message = payload.get("message") or {}
+    chat_id = message.get("chat", {}).get("id")
+    # customer share contact -> isi otomatis customer_phone di order aktif/terakhir
+    contact = message.get("contact")
+    if contact and contact.get("phone_number"):
+        binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
+        if binding:
+            latest = (db.query(ExtractedOrder)
+                      .join(Message, Message.id == ExtractedOrder.message_id)
+                      .filter(ExtractedOrder.bot_id == binding.bot_id, Message.chat_id == str(chat_id))
+                      .order_by(desc(ExtractedOrder.created_at)).first())
+            if latest and not latest.customer_phone:
+                latest.customer_phone = contact["phone_number"]
+                db.commit()
+        return {"ok": True}
     text = (message.get("text") or "").strip()
     if not text:
         return {"ok": True}
@@ -450,6 +463,12 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
             "rejected": f"katakan pesanan ditolak. Alasan: {latest_order.rejection_reason or '-'}. Tawarkan pesan ulang.",
         }.get(latest_order.status, "")
         system_prompt += f"\n\nINFO STATUS PESANAN CUSTOMER SAAT INI: status='{latest_order.status}'. Jika customer bertanya status pesanan, {guidance}"
+        if latest_order.status in ("rejected", "completed", "shipped"):
+            system_prompt += ("\n\nPENTING: Jangan mencatat pesanan baru kecuali customer secara eksplisit menyebut produk yang ingin dipesan ulang. "
+                              "Kalau customer hanya menanggapi/merespon pesan, balas singkat saja tanpa mencatat pesanan.")
+    system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum menyatakan pesanan sudah dicatat/diubah, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
+                      "Baru setelah customer mengiyakan, katakan pesanan sudah tercatat/terupdate. "
+                      "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi.")
 
     start = time.time()
     try:
@@ -474,7 +493,6 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
         existing_summary = {
             "products": existing.products, "total_price": float(existing.total_price) if existing.total_price else None,
             "delivery_address": existing.delivery_address, "customer_phone": existing.customer_phone,
-            "special_requests": existing.special_requests,
         }
     try:
         order = gemini_service.extract_order(api_key, text, history, existing_summary, (file_context or "") + "\n" + (bot.system_prompt or ""))
@@ -488,25 +506,35 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(msg)
 
-    if order and existing:
-        # ponytail: 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
-        existing.products = order.get("products") or existing.products
+    # ponytail: hanya simpan/update order setelah customer mengonfirmasi ringkasan dari AI
+    if order and existing and order.get("customer_confirmed"):
+        # 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
+        new_products = order.get("products") or existing.products
+        # ponytail: note per produk — bila AI menghilangkan note lama untuk produk yg sama, pulihkan
+        try:
+            old_notes = {str(p.get("product_name", "")).lower(): p.get("note") for p in (existing.products or [])}
+            for p in new_products:
+                if not p.get("note"):
+                    old = old_notes.get(str(p.get("product_name", "")).lower())
+                    if old:
+                        p["note"] = old
+        except Exception:
+            pass
+        existing.products = new_products
         existing.total_price = order.get("total_price") if order.get("total_price") is not None else existing.total_price
         existing.delivery_address = order.get("delivery_address") or existing.delivery_address
         existing.customer_phone = order.get("customer_phone") or existing.customer_phone
-        existing.special_requests = order.get("special_requests") or existing.special_requests
         if not existing.customer_name and order.get("customer_name"):
             existing.customer_name = order.get("customer_name")
         existing.status = "pending" if existing.total_price is not None else "incomplete"
         db.commit()
-    elif order:
+    elif order and order.get("customer_confirmed"):
         status = "pending" if order.get("total_price") is not None else "incomplete"
         db.add(ExtractedOrder(
             bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
             customer_name=order.get("customer_name") or customer_name,
             products=order["products"], total_price=order.get("total_price"),
             delivery_address=order.get("delivery_address"), customer_phone=order.get("customer_phone"),
-            special_requests=order.get("special_requests"), status=status,
         ))
         db.commit()
         try:

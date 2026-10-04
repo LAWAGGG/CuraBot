@@ -26,8 +26,8 @@ def _get_client(api_key: str) -> genai.Client:
 
 def _is_rate_limit(e: Exception) -> bool:
     if isinstance(e, APIError):
-        if e.code in (429, 403, 404):
-            # 404: nama model tidak tersedia utk key ini -> coba model berikutnya
+        if e.code in (429, 403, 404, 500, 502, 503, 504):
+            # 404: nama model tidak tersedia utk key ini; 5xx: model overloaded/down
             return True
     msg = str(e).upper()
     return "RESOURCE_EXHAUSTED" in msg or ("RATE" in msg and "LIMIT" in msg) or "NOT_FOUND" in msg
@@ -89,7 +89,7 @@ def chat_with_fallback(api_key: str, system_prompt: str, file_context: str,
     return "Sorry, there is a temporary issue. Please try again in a moment.", "none"
 
 
-ORDER_KEYWORDS = ("pesan", "order", "pesanan", "beli", "pesenan")
+ORDER_KEYWORDS = ("pesan", "order", "pesanan", "beli", "pesenan", "mau ", "minta", "ambil", "nambah", "tambah", "pesen", "note", "catatan", "jangan", "tanpa", "setengah", "jadi", "iya", "oke", " aja", " deh", " dong", " nih", "nya", "betul", "ya", "benar", "yep", "sip", "siap", "ok")
 EDIT_KEYWORDS = ("ubah", "ganti", "edit", "kurangi", "tambah", "tidak jadi", "tdk jadi", "batal", "cancel", "hapus", "revisi", "minus", "plus", "kurang", "tambahin", "ga jadi", "gak jadi", "nggak jadi")
 
 
@@ -115,15 +115,24 @@ def extract_order(api_key: str, user_text: str, history: list, existing_order: d
     lowered = user_text.lower()
     if not any(k in lowered for k in ORDER_KEYWORDS) and not any(k in lowered for k in EDIT_KEYWORDS):
         return None
-    ctx = json.dumps([h["text"] for h in history[-3:]])
+    ctx = json.dumps([{"role": h.get("role"), "text": h["text"]} for h in history[-4:]])
     existing = json.dumps(existing_order) if existing_order else "null"
     kb = knowledge[:6000] if knowledge else ""
     prompt = f"""Recent context: {ctx}
  Existing pending order (if any): {existing}
  Knowledge base (products & prices): {kb or "none"}
  Message: {user_text}"""
-    system = """Analyze the customer message for a REAL order. The customer must explicitly use order intent words (e.g. "pesan", "order", "beli").
+    system = """Analyze the customer message for a REAL order.
 CRITICAL: If an existing pending order is provided, you MUST return the FULL merged order with "modify": true — keep existing products/quantities unless the customer changes them, keep existing name/phone/address unless they change, and fill in any new info. Removing an item means it is gone from the products list. Updating quantity means the new quantity replaces the old one.
+CRITICAL: Treat clear buying intent as a REAL order, including phrases like "saya mau <produk>", "<produk> <jumlah>", "minta <produk>", "tambah <produk>", "pesan <produk>". Do NOT require the literal word "pesan/order/beli".
+If the message is only an acknowledgment or reaction (e.g. "oke", "yaudah", "baik", "thanks", "yahh") with no product mentioned, return {"is_order": false} — do NOT create a new order.
+If the message is an affirmation (e.g. "ya", "betul", "oke", "jadi", "iya deh") AND the last assistant message contains an order summary to confirm, return THAT order with is_order: true, modify: true, and customer_confirmed: true. The order details — especially per-product notes — MUST be copied from the last assistant message's summary, NOT from the existing stored order (the existing order may be stale).
+If the customer changes ONLY the note/special request, return the FULL order (same product/quantity/etc. from existing order or last summary) with the NEW note(s) and modify: true, but customer_confirmed: false (the assistant must ask for confirmation first).
+For a NEW order where the customer has NOT yet explicitly confirmed a summary, set customer_confirmed: false. Set customer_confirmed: true ONLY when the latest customer message clearly confirms an order summary the assistant previously proposed.
+RULES-EXTRA:
+- Put each customer note for a specific item into that product's "note" field (e.g. [{"product_name": "Nasi Omelet Telur", "quantity": 1, "price": 13000, "note": "telurnya setengah matang"}]). Use different notes per product when they differ.
+- If customer_name/customer_phone/delivery_address were already given in "Recent context" or the existing order, REUSE them instead of leaving null or asking again.
+- When modifying an existing order, COMBINE notes: keep each product's previous "note" unless the customer changed or removed it for that product.
 Otherwise, if it is a NEW order, return it with "modify": false.
 RULES:
 - ALWAYS fill "price" for each product from the knowledge base when the product is listed there. Never leave price null if the knowledge base has it.
@@ -132,7 +141,7 @@ RULES:
 - "product_name" MUST be an actual item from the knowledge base. If the customer names something vague or unknown (e.g. "menu", "makanan") that is not in the knowledge base, return {"is_order": false} instead.
 If no order intent: {"is_order": false}
 Order JSON format:
-{"is_order": true, "modify": false, "customer_name": str|null, "products": [{"product_name": str, "quantity": int, "price": number}], "total_price": number|null, "delivery_address": str|null, "customer_phone": str|null, "special_requests": str|null}
+{"is_order": true, "modify": false, "customer_confirmed": false, "customer_name": str|null, "products": [{"product_name": str, "quantity": int, "price": number, "note": str|null}], "total_price": number|null, "delivery_address": str|null, "customer_phone": str|null}
 Output ONLY raw JSON, no markdown."""
     for model, _label in _model_chain():
         try:
