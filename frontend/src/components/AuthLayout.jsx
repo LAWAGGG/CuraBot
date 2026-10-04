@@ -21,7 +21,7 @@ const FEATURES = [
 export default function AuthLayout({ children }) {
   return (
     <div className="grid min-h-svh lg:grid-cols-[1.05fr_1fr]">
-      <aside className="hero-gradient hidden flex-col justify-between p-10 text-white lg:flex">
+      <aside className="mesh hidden flex-col justify-between p-10 text-white lg:flex">
         <div className="flex items-center gap-2.5">
           <span className="flex size-10 items-center justify-center rounded-xl bg-white/15 backdrop-blur">
             <Bot className="size-5" aria-hidden="true" />

@@ -280,8 +280,8 @@ export default function BotOrders() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {orders.map((order) => (
-                  <TableRow key={order.id}>
+                {orders.map((order, index) => (
+                  <TableRow key={order.id} className="rise" style={{ animationDelay: `${index * 50}ms` }}>
                     <TableCell>
                       <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>
                       <p className="text-xs text-muted-foreground">{order.customer_phone || '—'}</p>
@@ -345,8 +345,8 @@ export default function BotOrders() {
           </div>
 
           <ul className="space-y-3 md:hidden">
-            {orders.map((order) => (
-              <li key={order.id} className="rounded-xl border border-border bg-background p-4">
+            {orders.map((order, index) => (
+              <li key={order.id} style={{ animationDelay: `${index * 60}ms` }} className="rise rounded-xl border border-border bg-background p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>

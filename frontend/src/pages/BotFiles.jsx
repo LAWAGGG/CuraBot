@@ -157,13 +157,14 @@ export default function BotFiles() {
           />
         ) : (
           <ul className="space-y-2">
-            {files.map((file) => {
+            {files.map((file, index) => {
               const isSheet = file.file_type === '.xlsx'
               const Icon = isSheet ? FileSpreadsheet : FileText
               return (
                 <li
                   key={file.id}
-                  className="flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3"
+                  style={{ animationDelay: `${index * 50}ms` }}
+                  className="rise flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3"
                 >
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="size-4.5" aria-hidden="true" />

@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import { AlertTriangle, ImagePlus, KeyRound, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
+import { AnimatePresence, motion } from 'framer-motion'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -35,6 +36,19 @@ export default function BotSettings() {
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleteConfirm, setDeleteConfirm] = useState('')
   const [deleting, setDeleting] = useState(false)
+
+  const dirty =
+    name.trim() !== bot.name ||
+    systemPrompt !== bot.system_prompt ||
+    paymentInfo !== (bot.payment_info ?? '') ||
+    apiKey.trim() !== ''
+
+  const resetForm = () => {
+    setName(bot.name)
+    setSystemPrompt(bot.system_prompt)
+    setPaymentInfo(bot.payment_info ?? '')
+    setApiKey('')
+  }
 
   const save = async (event) => {
     event.preventDefault()
@@ -225,17 +239,37 @@ export default function BotSettings() {
           </div>
         </section>
 
-        <div className="flex justify-end">
-          <Button type="submit" size="lg" disabled={saving}>
-            {saving ? (
-              <Loader2 className="animate-spin" aria-hidden="true" />
-            ) : (
-              <Save aria-hidden="true" />
-            )}
-            Simpan Perubahan
-          </Button>
-        </div>
       </form>
+
+      <AnimatePresence>
+        {dirty ? (
+        <motion.div
+          initial={{ opacity: 0, y: 60 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 60 }}
+          transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+          className="fixed inset-x-0 bottom-5 z-50 flex justify-center px-4"
+        >
+          <div className="flex items-center gap-3 rounded-full border border-border bg-background/95 py-2 pr-2 pl-5 shadow-lg backdrop-blur">
+            <p className="text-sm font-medium">Ada perubahan belum disimpan</p>
+            <Button type="button" variant="ghost" size="sm" onClick={resetForm}>
+              Batal
+            </Button>
+            <Button type="button" size="sm" disabled={saving} onClick={(e) => {
+                e.preventDefault()
+                save(e)
+              }}>
+              {saving ? (
+                <Loader2 className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Save aria-hidden="true" />
+              )}
+              Simpan
+            </Button>
+          </div>
+        </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       <section className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-5">
         <div className="flex items-center gap-2 text-destructive">

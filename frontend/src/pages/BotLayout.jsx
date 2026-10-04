@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { Link, NavLink, Outlet, useParams } from 'react-router-dom'
 import { Bot, Copy, ExternalLink, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
@@ -36,11 +37,20 @@ export default function BotLayout() {
 
   if (loading && !bot) {
     return (
-      <div className="space-y-4">
-        <Skeleton className="h-24 rounded-xl" />
-        <Skeleton className="h-10 w-full max-w-xl rounded-lg" />
+      <>
+        <Skeleton className="mb-6 h-24 rounded-2xl" />
+        <nav
+          className="mb-6 flex gap-1 overflow-x-auto border-b border-border lg:hidden"
+          aria-label="Navigasi bot"
+        >
+          {TABS.map((tab) => (
+            <span key={tab.label} className="border-b-2 border-transparent px-3.5 py-2.5 text-sm text-muted-foreground">
+              {tab.label}
+            </span>
+          ))}
+        </nav>
         <Skeleton className="h-64 rounded-xl" />
-      </div>
+      </>
     )
   }
 
@@ -70,7 +80,7 @@ export default function BotLayout() {
     <>
       <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-primary/10 bg-background p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-4">
-          <span className="hero-gradient flex size-13 shrink-0 items-center justify-center rounded-2xl text-white">
+          <span className="mesh flex size-13 shrink-0 items-center justify-center rounded-2xl text-white">
             <Bot className="size-6.5" aria-hidden="true" />
           </span>
           <div className="min-w-0">
@@ -100,7 +110,7 @@ export default function BotLayout() {
       </div>
 
       <nav
-        className="mb-6 flex gap-1 overflow-x-auto border-b border-border"
+        className="mb-6 flex gap-1 overflow-x-auto border-b border-border lg:hidden"
         aria-label="Navigasi bot"
       >
         {TABS.map((tab) => (
@@ -119,7 +129,9 @@ export default function BotLayout() {
         ))}
       </nav>
 
-      <Outlet context={{ bot, refreshBot: refresh }} />
+      <Suspense fallback={<Skeleton className="h-64 rounded-xl" />}>
+        <Outlet context={{ bot, refreshBot: refresh }} />
+      </Suspense>
     </>
   )
 }

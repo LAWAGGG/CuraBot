@@ -1,6 +1,5 @@
-import { lazy, Suspense } from 'react'
+import { lazy } from 'react'
 import { Route, Routes } from 'react-router-dom'
-import { Loader2 } from 'lucide-react'
 
 import AppShell from '@/components/AppShell'
 import { RequireAuth } from '@/lib/auth'
@@ -18,28 +17,12 @@ const BotFiles = lazy(() => import('@/pages/BotFiles'))
 const BotAnalytics = lazy(() => import('@/pages/BotAnalytics'))
 const BotSettings = lazy(() => import('@/pages/BotSettings'))
 
-function PageFallback() {
-  return (
-    <div className="flex min-h-[50vh] items-center justify-center">
-      <Loader2 className="size-6 animate-spin text-primary" aria-label="Memuat halaman" />
-    </div>
-  )
-}
 
 export default function App() {
   return (
-    <Suspense fallback={<PageFallback />}>
-      <Routes>
+    <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
-        <Route
-          path="/bots/new"
-          element={
-            <RequireAuth>
-              <BotWizard />
-            </RequireAuth>
-          }
-        />
         <Route
           element={
             <RequireAuth>
@@ -48,6 +31,7 @@ export default function App() {
           }
         >
           <Route path="/" element={<Dashboard />} />
+          <Route path="/bots/new" element={<BotWizard />} />
           <Route path="/bots/:id" element={<BotLayout />}>
             <Route index element={<BotOverview />} />
             <Route path="percakapan" element={<BotChats />} />
@@ -58,7 +42,6 @@ export default function App() {
           </Route>
         </Route>
         <Route path="*" element={<NotFound />} />
-      </Routes>
-    </Suspense>
+    </Routes>
   )
 }

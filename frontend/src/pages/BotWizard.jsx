@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Bot, Eye, EyeOff, Loader2, Pencil, RefreshCw, Sparkles } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Eye, EyeOff, Loader2, Pencil, RefreshCw, Sparkles } from 'lucide-react'
+import { AnimatePresence, motion } from 'framer-motion'
+
+import PageHeader from '@/components/PageHeader'
 import { toast } from 'sonner'
 
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -231,32 +234,32 @@ export default function BotWizard() {
     ) : null
 
   return (
-    <div className="min-h-svh bg-muted/30">
-      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-4xl items-center gap-3 px-4 py-3 sm:px-6">
-          <Button asChild variant="ghost" size="icon" aria-label="Kembali ke Beranda">
-            <Link to="/">
-              <ArrowLeft aria-hidden="true" />
-            </Link>
-          </Button>
-          <div className="flex items-center gap-2">
-            <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Bot className="size-4.5" aria-hidden="true" />
+    <>
+      <div className="mx-auto w-full max-w-4xl">
+        <PageHeader
+          title="Buat Bot Baru"
+          description="Jawab beberapa pertanyaan, bot Anda langsung siap."
+          backTo="/"
+          actions={
+            <span className="text-xs font-medium text-muted-foreground">
+              Langkah {Math.min(step + 1, STEP_LABELS.length)} dari {STEP_LABELS.length}
             </span>
-            <span className="font-bold tracking-tight">Buat Bot Baru</span>
-          </div>
-          <span className="ml-auto text-xs font-medium text-muted-foreground">
-            Langkah {Math.min(step + 1, STEP_LABELS.length)} dari {STEP_LABELS.length}
-          </span>
-        </div>
-      </header>
+          }
+        />
 
-      <main className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6 lg:py-8">
         <div className="mb-6">
           <Stepper steps={STEP_LABELS} current={step} onStepClick={goTo} />
         </div>
 
-        <div className="rounded-2xl border border-border bg-background p-5 shadow-sm sm:p-8">
+        <AnimatePresence mode="wait">
+        <motion.div
+          key={step}
+          initial={{ opacity: 0, x: 16 }}
+          animate={{ opacity: 1, x: 0 }}
+          exit={{ opacity: 0, x: -16 }}
+          transition={{ duration: 0.2, ease: 'easeOut' }}
+          className="rounded-2xl border border-border bg-background p-5 shadow-sm sm:p-8"
+        >
           {step === 0 ? (
             <>
               <StepHeading
@@ -637,8 +640,9 @@ export default function BotWizard() {
               </Button>
             )}
           </div>
-        </div>
-      </main>
+        </motion.div>
+        </AnimatePresence>
+      </div>
 
       <ConfirmDialog
         open={regenDialog}
@@ -653,6 +657,6 @@ export default function BotWizard() {
           setRegenDialog(false)
         }}
       />
-    </div>
+    </>
   )
 }

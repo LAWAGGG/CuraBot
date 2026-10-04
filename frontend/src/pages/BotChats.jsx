@@ -198,8 +198,8 @@ export default function BotChats() {
       ) : (
         <>
           <ul className="space-y-2.5">
-            {filtered.map((row) => (
-              <li key={row.id}>
+            {filtered.map((row, index) => (
+              <li key={row.id} className="rise" style={{ animationDelay: `${index * 50}ms` }}>
                 <button
                   type="button"
                   onClick={() => setDetail(row)}

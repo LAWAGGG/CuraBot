@@ -71,7 +71,7 @@
     --muted: #F7F4F0;
     --muted-foreground: #4A4A4A;
     --accent: #A8DCC8;
-    --accent-foreground: #1B5E3F;
+    --accent-foreground: #0B6E5F;
     --destructive: #EF4444;
     --success: #10B981;
     --warning: #F59E0B;
@@ -79,32 +79,74 @@
     --border: #E8E8E8;
     --input: #E8E8E8;
     --ring: #5FBB97;
-    --chart-1: #2E8B57;
+    --chart-1: #0E9F8A;
     --chart-2: #5FBB97;
-    --chart-3: #1B5E3F;
-    --chart-4: #3FA876;
+    --chart-3: #0B6E5F;
+    --chart-4: #10B981;
     --chart-5: #A8DCC8;
     --radius: 0.5rem;
-    --sidebar: #FFFFFF;
+    --sidebar: #F4F4F2;
     --sidebar-foreground: #1A1A1A;
-    --sidebar-primary: #2E8B57;
+    --sidebar-primary: #0E9F8A;
     --sidebar-primary-foreground: #FFFFFF;
-    --sidebar-accent: #EDF6F1;
-    --sidebar-accent-foreground: #2E8B57;
-    --sidebar-border: #E8E8E8;
+    --sidebar-accent: #FFFFFF;
+    --sidebar-accent-foreground: #141414;
+    --sidebar-border: #E9E9E6;
     --sidebar-ring: #5FBB97;
 }
 
 @utility card-soft {
-    background-image: linear-gradient(180deg, #FFFFFF 0%, #F0E5D8 100%);
+    background-image: linear-gradient(180deg, #FFFFFF 0%, #F6F4F0 100%);
 }
 
-@utility hero-gradient {
-    background-image: linear-gradient(135deg, #1B5E3F 0%, #2E8B57 40%, #3FA876 100%);
+.mesh {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background-color: #07213B;
+}
+.mesh::before,
+.mesh::after {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    inset: -40%;
+    filter: blur(90px);
+    will-change: transform;
+}
+.mesh::before {
+    background:
+        radial-gradient(circle at 25% 30%, rgba(52, 211, 153, 0.85) 0%, transparent 45%),
+        radial-gradient(circle at 75% 20%, rgba(34, 211, 238, 0.7) 0%, transparent 45%),
+        radial-gradient(circle at 60% 80%, rgba(163, 230, 53, 0.55) 0%, transparent 50%);
+    animation: mesh-a 22s ease-in-out infinite alternate;
+}
+.mesh::after {
+    background:
+        radial-gradient(circle at 80% 75%, rgba(16, 185, 129, 0.7) 0%, transparent 45%),
+        radial-gradient(circle at 20% 80%, rgba(14, 116, 144, 0.8) 0%, transparent 50%),
+        radial-gradient(circle at 50% 10%, rgba(59, 130, 246, 0.5) 0%, transparent 45%);
+    animation: mesh-b 28s ease-in-out infinite alternate;
+}
+
+@keyframes mesh-a {
+    0% { transform: translate3d(-6%, -4%, 0) rotate(0deg) scale(1); }
+    50% { transform: translate3d(5%, 6%, 0) rotate(25deg) scale(1.15); }
+    100% { transform: translate3d(-3%, 8%, 0) rotate(-15deg) scale(1.05); }
+}
+@keyframes mesh-b {
+    0% { transform: translate3d(6%, 5%, 0) rotate(0deg) scale(1.1); }
+    50% { transform: translate3d(-5%, -6%, 0) rotate(-20deg) scale(1); }
+    100% { transform: translate3d(4%, -5%, 0) rotate(18deg) scale(1.2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mesh::before,
+    .mesh::after { animation: none; }
 }
 
 @utility hairline-green {
-    border: 1px solid rgba(46, 139, 87, 0.1);
+    border: 1px solid rgba(14, 159, 138, 0.1);
 }
 
 @layer base {
@@ -117,4 +159,15 @@
   html {
     @apply font-sans;
     }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.rise {
+  animation: rise 0.4s ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rise { animation: none; }
 }

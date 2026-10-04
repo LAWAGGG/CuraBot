@@ -1,8 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Bot,
-  Copy,
   ExternalLink,
   MoreVertical,
   Pencil,
@@ -28,7 +27,41 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch, errorMessage, invalidate } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
-import { copyToClipboard, formatDate } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
+
+
+function BannerWord({ word }) {
+  const wrapRef = useRef(null)
+  const textRef = useRef(null)
+  const [clipped, setClipped] = useState(false)
+
+  useEffect(() => {
+    const measure = () => {
+      if (!wrapRef.current || !textRef.current) return
+      setClipped(textRef.current.scrollWidth > wrapRef.current.clientWidth + 1)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [word])
+
+  return (
+    <div ref={wrapRef} className="absolute inset-0 overflow-hidden">
+      <span
+        ref={textRef}
+        aria-hidden="true"
+className={
+          clipped
+            ? 'absolute -bottom-13 left-2 max-w-full -translate-y-1/2 truncate text-7xl font-black tracking-tight whitespace-nowrap text-primary/25 uppercase select-none'
+            : 'absolute -bottom-13 left-2 max-w-none -translate-y-1/2 text-7xl font-black tracking-tight whitespace-nowrap text-primary/25 uppercase select-none'
+        }
+      >
+        {word}
+      </span>
+    </div>
+  )
+}
+
 
 const BOTS_KEY = 'bots'
 
@@ -40,15 +73,6 @@ export default function Dashboard() {
     apiFetch(BOTS_KEY, { url: '/api/bots/list' }),
   )
   const bots = data?.bots ?? []
-
-  const copyLink = async (bot) => {
-    try {
-      await copyToClipboard(bot.telegram_link)
-      toast.success('Tautan bot disalin.')
-    } catch {
-      toast.error('Gagal menyalin tautan.')
-    }
-  }
 
   const confirmDelete = async () => {
     if (!deleting) return
@@ -84,7 +108,7 @@ export default function Dashboard() {
       {loading && !data ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {[0, 1, 2].map((index) => (
-            <Skeleton key={index} className="h-44 rounded-xl" />
+            <Skeleton key={index} className="h-36 rounded-xl" />
           ))}
         </div>
       ) : error ? (
@@ -111,32 +135,33 @@ export default function Dashboard() {
         />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {bots.map((bot) => (
+          {bots.map((bot, index) => (
             <Card
               key={bot.id}
-              className="card-soft group relative flex flex-col gap-4 border-primary/10 p-5 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-primary/25 hover:shadow-md"
+              style={{ animationDelay: `${index * 60}ms` }}
+              className="rise group relative overflow-hidden border-border/80 p-0 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg"
             >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <span className="flex size-11 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                    <Bot className="size-5.5" aria-hidden="true" />
-                  </span>
-                  <div className="min-w-0">
-                    <h2 className="truncate font-semibold text-foreground">
-                      <Link
-                        to={`/bots/${bot.id}`}
-                        className="outline-none after:absolute after:inset-0 focus-visible:underline"
-                      >
-                        {bot.name}
-                      </Link>
-                    </h2>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      Dibuat {formatDate(bot.created_at)}
-                    </p>
-                  </div>
+              <div className="relative h-24 overflow-hidden bg-[radial-gradient(circle_at_20%_20%,rgba(14,159,138,0.25),transparent_55%),radial-gradient(circle_at_80%_10%,rgba(59,130,246,0.2),transparent_50%),radial-gradient(circle_at_70%_90%,rgba(163,230,53,0.18),transparent_55%)]">
+                <BannerWord word={bot.name.trim().split(/\s+/).pop()} />
+                <div className="absolute top-3 right-3">
+                  <StatusBadge status={bot.status} />
+                </div>
+              </div>
+              <div className="flex items-start justify-between gap-3 px-5 pt-7 pb-5">
+                <div className="min-w-0">
+                  <h2 className="truncate text-lg font-bold tracking-tight text-foreground">
+                    <Link
+                      to={`/bots/${bot.id}`}
+                      className="outline-none after:absolute after:inset-0 focus-visible:underline"
+                    >
+                      {bot.name}
+                    </Link>
+                  </h2>
+                  <p className="mt-0.5 text-xs text-muted-foreground">
+                    Dibuat {formatDate(bot.created_at)}
+                  </p>
                 </div>
                 <div className="relative z-10 flex items-center gap-1">
-                  <StatusBadge status={bot.status} />
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon-sm" aria-label={`Menu bot ${bot.name}`}>
@@ -166,20 +191,6 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="relative z-10 flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-2">
-                <span className="truncate text-xs text-muted-foreground" title={bot.telegram_link}>
-                  {bot.telegram_link}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  className="ml-auto shrink-0"
-                  onClick={() => copyLink(bot)}
-                  aria-label={`Salin tautan ${bot.name}`}
-                >
-                  <Copy aria-hidden="true" />
-                </Button>
-              </div>
             </Card>
           ))}
         </div>
