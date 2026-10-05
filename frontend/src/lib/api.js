@@ -60,6 +60,7 @@ const MESSAGE_MAP = [
   [/payment proof already received/i, 'Bukti pembayaran order ini sudah diterima.'],
   [/customer chat not found/i, 'Chat customer tidak ditemukan di Telegram.'],
   [/failed to send telegram reminder.*/i, 'Gagal mengirim pengingat via Telegram. Coba lagi.'],
+  [/failed to send telegram message.*/i, 'Gagal mengirim pesan via Telegram. Coba lagi.'],
   [/max (\d+) files per bot/i, 'Batas maksimal $1 berkas per bot sudah tercapai.'],
   [/only pdf, docx, and xlsx allowed/i, 'Hanya berkas PDF, DOCX, dan XLSX yang diizinkan.'],
   [/file too large \(max (\d+)mb\)/i, 'Berkas terlalu besar (maksimal $1MB).'],
