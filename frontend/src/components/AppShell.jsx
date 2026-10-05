@@ -2,6 +2,7 @@ import { Suspense, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Bot, ChevronDown, LayoutGrid, LogOut, Menu, PlusCircle } from 'lucide-react'
+import CuraBotLogo from '@/components/CuraBotLogo'
 
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -20,11 +21,9 @@ const BOT_TABS = [
 
 function Brand() {
   return (
-    <div className="flex items-center gap-2.5 px-5 py-5">
-      <span className="mesh flex size-9 items-center justify-center rounded-xl text-white shadow-sm">
-        <Bot className="size-5" aria-hidden="true" />
-      </span>
-      <span className="text-lg font-bold tracking-tight">CuraBot</span>
+    <div className="flex items-center gap-1 px-5 py-5">
+      <CuraBotLogo className="size-20" />
+      <span className="text-2xl font-bold tracking-tight">CuraBot</span>
     </div>
   )
 }
@@ -166,9 +165,7 @@ export default function AppShell() {
             </DrawerContent>
           </Drawer>
           <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Bot className="size-4" aria-hidden="true" />
-            </span>
+            <CuraBotLogo className="size-10" />
             <span className="font-bold tracking-tight">CuraBot</span>
           </div>
         </header>

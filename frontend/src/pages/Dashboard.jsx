@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Bot,
   ExternalLink,
   MoreVertical,
   Pencil,
@@ -11,6 +10,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 
+import BannerWord from '@/components/BannerWord'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import EmptyState from '@/components/EmptyState'
 import PageHeader from '@/components/PageHeader'
@@ -28,40 +28,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch, errorMessage, invalidate } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { formatDate } from '@/lib/utils'
-
-
-function BannerWord({ word }) {
-  const wrapRef = useRef(null)
-  const textRef = useRef(null)
-  const [clipped, setClipped] = useState(false)
-
-  useEffect(() => {
-    const measure = () => {
-      if (!wrapRef.current || !textRef.current) return
-      setClipped(textRef.current.scrollWidth > wrapRef.current.clientWidth + 1)
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [word])
-
-  return (
-    <div ref={wrapRef} className="absolute inset-0 overflow-hidden">
-      <span
-        ref={textRef}
-        aria-hidden="true"
-className={
-          clipped
-            ? 'absolute -bottom-13 left-2 max-w-full -translate-y-1/2 truncate text-7xl font-black tracking-tight whitespace-nowrap text-primary/25 uppercase select-none'
-            : 'absolute -bottom-13 left-2 max-w-none -translate-y-1/2 text-7xl font-black tracking-tight whitespace-nowrap text-primary/25 uppercase select-none'
-        }
-      >
-        {word}
-      </span>
-    </div>
-  )
-}
-
 
 const BOTS_KEY = 'bots'
 
@@ -121,7 +87,8 @@ export default function Dashboard() {
         </Card>
       ) : bots.length === 0 ? (
         <EmptyState
-          icon={Bot}
+          image="/CuraBot.svg"
+          imageAlt="CuraBot"
           title="Belum ada bot"
           description="Buat bot pertama Anda — cukup jawab beberapa pertanyaan dan bot siap dibagikan ke pelanggan."
           action={

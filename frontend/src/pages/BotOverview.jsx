@@ -11,7 +11,6 @@ import {
   Share2,
 } from 'lucide-react'
 
-import ShareCard from '@/components/ShareCard'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
@@ -132,8 +131,6 @@ export default function BotOverview() {
           ))}
         </ul>
       </section>
-
-      <ShareCard name={bot.name} link={bot.telegram_link} />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <section className="rounded-xl border border-border bg-background p-5" aria-labelledby="guide-title">

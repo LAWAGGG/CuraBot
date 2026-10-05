@@ -1,4 +1,6 @@
-import { Bot, MessageSquareText, QrCode, Sparkles } from 'lucide-react'
+import { MessageSquareText, QrCode, Sparkles } from 'lucide-react'
+
+import CuraBotLogo from '@/components/CuraBotLogo'
 
 const FEATURES = [
   {
@@ -23,9 +25,7 @@ export default function AuthLayout({ children }) {
     <div className="grid min-h-svh lg:grid-cols-[1.05fr_1fr]">
       <aside className="mesh hidden flex-col justify-between p-10 text-white lg:flex">
         <div className="flex items-center gap-2.5">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-white/15 backdrop-blur">
-            <Bot className="size-5" aria-hidden="true" />
-          </span>
+          <CuraBotLogo className="size-10" />
           <span className="text-xl font-bold tracking-tight">CuraBot</span>
         </div>
         <div className="max-w-md">
@@ -51,9 +51,7 @@ export default function AuthLayout({ children }) {
       <main className="flex items-center justify-center px-4 py-10 sm:px-8">
         <div className="w-full max-w-md">
           <div className="mb-8 flex items-center gap-2.5 lg:hidden">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Bot className="size-5" aria-hidden="true" />
-            </span>
+            <CuraBotLogo className="size-9" />
             <span className="text-lg font-bold tracking-tight">CuraBot</span>
           </div>
           {children}

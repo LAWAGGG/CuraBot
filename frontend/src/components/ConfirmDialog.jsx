@@ -24,7 +24,7 @@ export default function ConfirmDialog({
 }) {
   return (
     <AlertDialog open={open} onOpenChange={(next) => (!loading ? onOpenChange(next) : null)}>
-      <AlertDialogContent>
+      <AlertDialogContent className="top-auto bottom-0 left-1/2 -translate-x-1/2 translate-y-0 rounded-b-none sm:top-1/2 sm:bottom-auto sm:-translate-y-1/2 sm:rounded-b-xl">
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description ? (

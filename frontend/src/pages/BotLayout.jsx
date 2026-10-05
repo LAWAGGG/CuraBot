@@ -1,15 +1,16 @@
-import { Suspense } from 'react'
+import { Suspense, useState } from 'react'
 import { Link, NavLink, Outlet, useParams } from 'react-router-dom'
-import { Bot, Copy, ExternalLink, RefreshCw } from 'lucide-react'
-import { toast } from 'sonner'
+import { RefreshCw, Share2 } from 'lucide-react'
 
+import BannerWord from '@/components/BannerWord'
 import PageHeader from '@/components/PageHeader'
+import ShareDialog from '@/components/ShareDialog'
 import StatusBadge from '@/components/StatusBadge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
-import { copyToClipboard, formatDate } from '@/lib/utils'
+import { formatDate } from '@/lib/utils'
 
 const TABS = [
   { to: '.', label: 'Ringkasan', end: true },
@@ -26,14 +27,7 @@ export default function BotLayout() {
     apiFetch(`bot:${id}`, { url: `/api/bots/${id}` }),
   )
 
-  const copyLink = async () => {
-    try {
-      await copyToClipboard(bot.telegram_link)
-      toast.success('Tautan bot disalin.')
-    } catch {
-      toast.error('Gagal menyalin tautan.')
-    }
-  }
+  const [shareOpen, setShareOpen] = useState(false)
 
   if (loading && !bot) {
     return (
@@ -78,36 +72,33 @@ export default function BotLayout() {
 
   return (
     <>
-      <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-primary/10 bg-background p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 items-center gap-4">
-          <span className="mesh flex size-13 shrink-0 items-center justify-center rounded-2xl text-white">
-            <Bot className="size-6.5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate text-xl font-bold tracking-tight sm:text-2xl">{bot.name}</h1>
-              <StatusBadge status={bot.status} />
-            </div>
-            <p className="mt-1 text-xs text-muted-foreground">Dibuat {formatDate(bot.created_at)}</p>
+      <div className="relative mb-6 overflow-hidden rounded-2xl border border-border/80 shadow-sm">
+        <div className="relative h-24 overflow-hidden bg-[radial-gradient(circle_at_20%_20%,rgba(14,159,138,0.25),transparent_55%),radial-gradient(circle_at_80%_10%,rgba(59,130,246,0.2),transparent_50%),radial-gradient(circle_at_70%_90%,rgba(163,230,53,0.18),transparent_55%)]">
+          <BannerWord word={bot.name} />
+          <div className="absolute top-3 right-3">
+            <StatusBadge status={bot.status} />
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex min-w-0 items-center gap-1 rounded-lg border border-border bg-muted/40 px-3 py-1.5">
-            <span className="max-w-44 truncate text-xs text-muted-foreground" title={bot.telegram_link}>
-              {bot.telegram_link}
-            </span>
-            <Button variant="ghost" size="icon-xs" onClick={copyLink} aria-label="Salin tautan bot">
-              <Copy aria-hidden="true" />
-            </Button>
+        <div className="flex flex-col gap-3 bg-background px-5 pt-4 pb-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold tracking-tight break-words sm:text-2xl">{bot.name}</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Dibuat {formatDate(bot.created_at)}
+            </p>
           </div>
-          <Button asChild variant="outline" size="sm">
-            <a href={bot.telegram_link} target="_blank" rel="noreferrer">
-              <ExternalLink aria-hidden="true" />
-              Buka
-            </a>
+          <Button size="sm" onClick={() => setShareOpen(true)} className="shrink-0">
+            <Share2 aria-hidden="true" />
+            Bagikan
           </Button>
         </div>
       </div>
+
+      <ShareDialog
+        open={shareOpen}
+        onOpenChange={setShareOpen}
+        name={bot.name}
+        link={bot.telegram_link}
+      />
 
       <nav
         className="mb-6 flex gap-1 overflow-x-auto border-b border-border lg:hidden"

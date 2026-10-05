@@ -211,9 +211,9 @@ export default function BotOrders() {
     applyStatus(order, nextStatus)
   }
 
-  const remindAndApply = async () => {
+  const sendWarningOnly = async () => {
     if (!warning) return
-    const { order, nextStatus } = warning
+    const { order } = warning
     setBusyId(order.id)
     try {
       await apiFetch(null, {
@@ -221,13 +221,12 @@ export default function BotOrders() {
         url: `/api/bots/${bot.id}/orders/${order.id}/remind`,
       })
       toast.success('Peringatan pembayaran dikirim ke customer via Telegram.')
+      setWarning(null)
     } catch (caught) {
       toast.error(errorMessage(caught))
     } finally {
       setBusyId(null)
     }
-    setWarning(null)
-    await applyStatus(order, nextStatus)
   }
 
   const confirmReject = async () => {
@@ -468,65 +467,68 @@ export default function BotOrders() {
             <AlertDialogTitle>Pesanan #{warning?.order.id} belum ada bukti bayar</AlertDialogTitle>
             <AlertDialogDescription>
               {warning?.order.customer_name || 'Pelanggan'} · {productSummary(warning?.order.products)} ·{' '}
-              {formatRupiah(warning?.order.total_price)}. Pastikan customer membayar dan mengirim bukti
-              sebelum status dinaikkan ke {warning?.nextStatus}.
+              {formatRupiah(warning?.order.total_price)}. Status tidak diubah. Pilih kirim peringatan ke
+              customer, lewati untuk tetap menaikkan ke {warning?.nextStatus}, atau batal.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={Boolean(busyId)}>Batal</AlertDialogCancel>
-              <AlertDialogCancel
-              onClick={() => applyStatus(warning.order, warning.nextStatus)}
-              disabled={Boolean(busyId)}
-            >
-              Lewati
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault()
-                remindAndApply()
+            <Button
+              variant="ghost"
+              onClick={() => {
+                const current = warning
+                setWarning(null)
+                applyStatus(current.order, current.nextStatus)
               }}
               disabled={Boolean(busyId)}
             >
-              Kirim peringatan + lanjutkan
+              Lewati
+            </Button>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                sendWarningOnly()
+              }}
+              disabled={Boolean(busyId)}
+            >
+              Kirim peringatan
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <Drawer open={Boolean(rejecting)} onOpenChange={(open) => (!open ? setRejecting(null) : null)}>
-        <DrawerContent className="sm:max-w-md">
-          <DrawerHeader>
-            <DrawerTitle>Tolak pesanan #{rejecting?.id}</DrawerTitle>
-            <DrawerDescription>
+      <AlertDialog open={Boolean(rejecting)} onOpenChange={(open) => (!open ? setRejecting(null) : null)}>
+        <AlertDialogContent className="top-auto bottom-0 w-full translate-x-[-50%] translate-y-0 rounded-t-2xl rounded-b-none data-[size=default]:max-w-none sm:top-1/2 sm:bottom-auto sm:-translate-y-1/2 sm:rounded-xl data-[size=default]:sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Tolak pesanan #{rejecting?.id}</AlertDialogTitle>
+            <AlertDialogDescription>
               Pelanggan akan menerima alasan penolakan ini lewat Telegram.
-            </DrawerDescription>
-          </DrawerHeader>
-          <div className="space-y-3 p-4 pt-0">
-            <div className="space-y-2">
-              <Label htmlFor="reject-reason">Alasan penolakan</Label>
-              <Textarea
-                id="reject-reason"
-                value={reason}
-                onChange={(event) => setReason(event.target.value)}
-                placeholder="Contoh: Stok habis, silakan pesan menu lain."
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setRejecting(null)} disabled={Boolean(busyId)}>
-                Batal
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={confirmReject}
-                disabled={Boolean(busyId)}
-                className="bg-destructive text-white hover:bg-destructive/90"
-              >
-                Tolak Pesanan
-              </Button>
-            </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="reject-reason">Alasan penolakan</Label>
+            <Textarea
+              id="reject-reason"
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="Contoh: Stok habis, silakan pesan menu lain."
+            />
           </div>
-        </DrawerContent>
-      </Drawer>
+          <AlertDialogFooter className="flex-row justify-end">
+            <AlertDialogCancel onClick={() => setRejecting(null)} disabled={Boolean(busyId)}>
+              Batal
+            </AlertDialogCancel>
+            <Button
+              variant="destructive"
+              onClick={confirmReject}
+              disabled={Boolean(busyId)}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              Tolak Pesanan
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

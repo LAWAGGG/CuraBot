@@ -610,6 +610,28 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
                               "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
                               "bukti pembayaran di chat ini sebelum pesanan diproses. "
                               "Ikuti gaya bahasa pada system prompt.")
+    has_payment_info = bool((bot.payment_info or "").strip())
+    has_qris = bool(bot.qris_image_path)
+    pay_state = f"ada: {bot.payment_info.strip()}" if has_payment_info else "KOSONG (penjual belum mengisi info pembayaran)"
+    qris_state = "TERSEDIA (gambar QRIS penjual sudah diupload)" if has_qris else "TIDAK TERSEDIA (penjual belum upload gambar QRIS)"
+    system_prompt += (
+        "\n\nINFO PEMBAYARAN (ground truth, prioritas tertinggi untuk topik bayar): "
+        f"payment_info={pay_state}; qris_image={qris_state}."
+        "\nATURAN PEMBAYARAN (wajib, kalahkan instruksi lain): "
+        "1. Jawab bayar/transfer/rekening/nomor rekening/QRIS HANYA dari info di atas. "
+        "2. DILARANG mengarang nomor rekening/bank/VA/QRIS. "
+        "3. Tautan toko/website di system prompt BUKAN metode pembayaran — JANGAN sebut/arahkan ke link toko saat ditanya pembayaran, "
+        "kecuali payment_info di atas eksplisit memuat link itu sebagai cara bayar. "
+        "4. Ditanya rekening: payment_info ada -> kutip persis; kosong -> katakan info pembayaran belum diisi penjual, minta tunggu, jangan arahkan ke website. "
+        "5. Ditanya QRIS: TERSEDIA -> katakan QRIS tersedia dan gambarnya menyusul tepat setelah pesan ini; "
+        "TIDAK TERSEDIA -> katakan QRIS belum tersedia, tawarkan payment_info bila ada, bila kosong katakan tunggu info penjual. "
+        "6. Setiap customer bertanya soal pembayaran/cara bayar (umum, bukan spesifik satu metode): "
+        "sodorkan LANGSUNG semua metode yang ada tanpa menunggu diminta satu per satu. "
+        "Keduanya ada -> tampilkan daftar: 1) nomor rekening (kutip persis payment_info) 2) QRIS (katakan gambarnya menyusul). "
+        "Hanya satu yang ada -> tampilkan yang ada itu langsung dan lengkap. "
+        "Keduanya kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
+        "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada."
+    )
 
     start = time.time()
     try:
@@ -627,8 +649,12 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     if bot.qris_image_path and "qris" in text.lower():
         try:
             telegram_api.send_photo(token, chat_id, config.resolve_upload_path(bot.qris_image_path), caption="QRIS pembayaran")
+            try:
+                telegram_api.send_message(token, chat_id, "Itu gambar QRIS resmi dari penjual di atas ya. Setelah membayar, kirimkan foto/screenshot bukti pembayaran di chat ini.")
+            except Exception:
+                pass
         except Exception:
-            pass
+            telegram_api.send_message(token, chat_id, "Maaf, gambar QRIS gagal dikirim. Coba minta lagi atau hubungi penjual ya.")
 
     # ponytail: sertakan "incomplete" -> order yang masih dilengkapi tidak dobel
     existing = (db.query(ExtractedOrder)
