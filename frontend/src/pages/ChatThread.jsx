@@ -23,6 +23,7 @@ export default function ChatThread({ bot, user, onBack }) {
   const [sending, setSending] = useState(false)
   const [preview, setPreview] = useState(null)
   const [failedMedia, setFailedMedia] = useState(() => new Set())
+  const [mediaUrls, setMediaUrls] = useState({})
   const boxRef = useRef(null)
   const mountedRef = useRef(true)
   const generationRef = useRef(0)
@@ -44,6 +45,12 @@ export default function ChatThread({ bot, user, onBack }) {
     const generation = ++generationRef.current
     loadingTopRef.current = false
     setFailedMedia(new Set())
+    setSending(false)
+    setText('')
+    setMediaUrls((previous) => {
+      Object.values(previous).forEach((url) => URL.revokeObjectURL(url))
+      return {}
+    })
     api.post(`/api/bots/${bot.id}/conversations/${uid}/read`).catch(() => {})
     apiFetch(threadKey, {
       url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
@@ -58,6 +65,28 @@ export default function ChatThread({ bot, user, onBack }) {
     })
     return () => { mountedRef.current = false }
   }, [bot.id, threadKey, uid])
+
+  useEffect(() => {
+    let cancelled = false
+    const urls = {}
+    const media = bubbles.filter((bubble) => bubble.media_url && isValidUrl(bubble.media_url))
+    Promise.all(media.map(async (bubble) => {
+      try {
+        const response = await api.get(bubble.media_url, { responseType: 'blob' })
+        const url = URL.createObjectURL(response.data)
+        if (cancelled) URL.revokeObjectURL(url)
+        else urls[bubble.id] = url
+      } catch {
+        if (!cancelled) setFailedMedia((previous) => new Set(previous).add(bubble.id))
+      }
+    })).then(() => {
+      if (!cancelled) setMediaUrls((previous) => ({ ...previous, ...urls }))
+    })
+    return () => {
+      cancelled = true
+      Object.values(urls).forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [bubbles])
 
   const loadOlder = async () => {
     const generation = generationRef.current
@@ -146,6 +175,7 @@ export default function ChatThread({ bot, user, onBack }) {
             lastDay = day
             const mine = b.sender === 'admin' || b.sender === 'bot'
             const mediaOk = typeof b.media_url === 'string' && b.media_url.length > 0 && isValidUrl(b.media_url)
+            const mediaSrc = mediaUrls[b.id]
             return (
               <div key={b.id}>
                 {showDay ? (
@@ -155,10 +185,10 @@ export default function ChatThread({ bot, user, onBack }) {
                 ) : null}
                 <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[75%] rounded-xl px-3 py-2 text-sm ${mine ? 'bg-primary/10' : 'border border-border bg-background'}`}>
-                    {mediaOk && !failedMedia.has(b.id) ? (
-                      <button type="button" onClick={() => setPreview(b.media_url)} className="block">
+                    {mediaOk && mediaSrc && !failedMedia.has(b.id) ? (
+                      <button type="button" onClick={() => setPreview(mediaSrc)} className="block">
                         <img
-                          src={b.media_url}
+                          src={mediaSrc}
                           alt="Lampiran chat"
                           className="max-h-48 rounded-lg object-cover"
                           loading="lazy"

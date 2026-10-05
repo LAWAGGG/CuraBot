@@ -18,8 +18,11 @@ def get_me(token: str) -> dict:
     return _call(token, "getMe")
 
 
-def set_webhook(token: str, url: str):
-    return _call(token, "setWebhook", url=url)
+def set_webhook(token: str, url: str, secret_token: str | None = None):
+    kwargs = {"url": url}
+    if secret_token:
+        kwargs["secret_token"] = secret_token
+    return _call(token, "setWebhook", **kwargs)
 
 
 def delete_webhook(token: str):

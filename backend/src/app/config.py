@@ -11,6 +11,7 @@ DB_NAME = os.getenv("DB_NAME", "curabot")
 
 JWT_SECRET = os.getenv("JWT_SECRET", "change_me_min_32_chars_secret_key!!")
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY", "")
 
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8000").rstrip("/")
@@ -47,6 +48,12 @@ def upload_url(bot_id: int, path: str | None) -> str | None:
     if not path:
         return None
     return f"{BASE_URL}/uploads/{bot_id}/{os.path.basename(path)}"
+
+
+def chat_media_url(bot_id: int, path: str | None) -> str | None:
+    if not path:
+        return None
+    return f"{BASE_URL}/api/media/{bot_id}/{os.path.basename(path)}"
 
 
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(25 * 1024 * 1024)))

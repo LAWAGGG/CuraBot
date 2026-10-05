@@ -1,3 +1,4 @@
+import hmac
 import json
 import os
 import time
@@ -251,6 +252,18 @@ def upload_qris(bot_id: int, file: UploadFile = File(...),
     return {"ok": True, "qris_image_url": config.upload_url(bot_id, dest)}
 
 
+@app.get("/api/media/{bot_id}/{filename}")
+def get_media(bot_id: int, filename: str,
+              user_id: int = Depends(security.get_current_user),
+              db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    bot_dir = os.path.realpath(os.path.join(config.UPLOAD_DIR, str(bot_id)))
+    path = os.path.realpath(os.path.join(bot_dir, os.path.basename(filename)))
+    if os.path.dirname(path) != bot_dir or not os.path.isfile(path):
+        raise HTTPException(404, "Media not found")
+    return FileResponse(path)
+
+
 @app.get("/api/files/{bot_id}")
 def list_files(bot_id: int, user_id: int = Depends(security.get_current_user),
                db: Session = Depends(get_db)):
@@ -304,7 +317,7 @@ def split_bubbles(r, bot_id):
     if r.message_text and r.message_text != "[admin]":
         bubbles.append({
             "id": f"{r.id}-u", "sender": "user", "text": r.message_text,
-            "media_url": config.upload_url(bot_id, r.media_path),
+            "media_url": config.chat_media_url(bot_id, r.media_path),
             "created_at": str(r.created_at),
         })
     if r.response_text:
@@ -420,8 +433,10 @@ def mark_read(bot_id: int, customer_id: str,
               user_id: int = Depends(security.get_current_user),
               db: Session = Depends(get_db)):
     get_bot_or_404(db, user_id, bot_id)
+    if not db.query(Message.id).filter(Message.bot_id == bot_id, Message.user_id == customer_id).first():
+        raise HTTPException(404, "Customer chat not found")
     row = (db.query(ConversationRead).filter(ConversationRead.bot_id == bot_id,
-           ConversationRead.user_id == customer_id).first())
+            ConversationRead.user_id == customer_id).first())
     if not row:
         row = ConversationRead(bot_id=bot_id, user_id=customer_id)
         db.add(row)
@@ -580,7 +595,12 @@ def analytics(bot_id: int, range: int = Query(7, ge=1, le=365),
 # ---------- TELEGRAM WEBHOOK ----------
 
 @app.post("/api/telegram/webhook")
-async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
+async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
+    if config.TELEGRAM_WEBHOOK_SECRET:
+        provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(provided, config.TELEGRAM_WEBHOOK_SECRET):
+            raise HTTPException(403, "Invalid webhook secret")
+    payload = await request.json()
     message = payload.get("message") or {}
     chat_id = message.get("chat", {}).get("id")
     # customer share contact -> isi otomatis customer_phone di order aktif/terakhir
@@ -863,7 +883,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
 def setup_webhook():
     if config.TELEGRAM_TOKEN and config.BASE_URL.startswith("https://"):
         try:
-            telegram_api.set_webhook(config.TELEGRAM_TOKEN, f"{config.BASE_URL}/api/telegram/webhook")
+            telegram_api.set_webhook(config.TELEGRAM_TOKEN, f"{config.BASE_URL}/api/telegram/webhook", config.TELEGRAM_WEBHOOK_SECRET or None)
         except Exception:
             pass
     if config.TELEGRAM_TOKEN and not config.TELEGRAM_BOT_USERNAME:
