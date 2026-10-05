@@ -327,9 +327,16 @@ def list_conversations(bot_id: int, q: str = Query("", max_length=100),
            .subquery())
     rows = (db.query(Message).join(sub,
             (Message.user_id == sub.c.user_id) & (Message.created_at == sub.c.last_at))
-            .filter(Message.bot_id == bot_id).order_by(desc(Message.created_at)).all())
-    items = []
+            .filter(Message.bot_id == bot_id).order_by(desc(Message.created_at), desc(Message.id)).all())
+    seen = set()
+    unique_rows = []
     for r in rows:
+        if r.user_id in seen:
+            continue
+        seen.add(r.user_id)
+        unique_rows.append(r)
+    items = []
+    for r in unique_rows:
         order = (db.query(ExtractedOrder)
                  .filter(ExtractedOrder.bot_id == bot_id,
                          ExtractedOrder.customer_user_id == r.user_id,
@@ -360,7 +367,7 @@ def list_conversations(bot_id: int, q: str = Query("", max_length=100),
     if needle:
         items = [i for i in items
                  if needle in (i["customer_name"] or "").lower()
-                 or needle in i["user_id"].lower()
+                 or needle in str(i["user_id"]).lower()
                  or needle in (i["last_text"] or "").lower()]
     total = len(items)
     start = (page - 1) * limit
