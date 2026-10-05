@@ -12,6 +12,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Bersihkan duplikat data lama bila ada sebelum pasang unique constraint
+    op.execute("""
+        DELETE cr1 FROM conversation_reads cr1
+        INNER JOIN conversation_reads cr2 
+        WHERE cr1.id < cr2.id 
+          AND cr1.bot_id = cr2.bot_id 
+          AND cr1.user_id = cr2.user_id
+    """)
     op.create_unique_constraint(
         "uq_conversation_reads_bot_user",
         "conversation_reads",

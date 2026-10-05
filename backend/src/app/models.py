@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy import (
     Column, Integer, String, Text, DateTime, Float,
-    ForeignKey, Enum, JSON, Numeric, Index, func,
+    ForeignKey, Enum, JSON, Numeric, Index, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -100,6 +100,9 @@ class BotChat(Base):
 
 class ConversationRead(Base):
     __tablename__ = "conversation_reads"
+    __table_args__ = (
+        UniqueConstraint("bot_id", "user_id", name="uq_conversation_reads_bot_user"),
+    )
     id = Column(Integer, primary_key=True, autoincrement=True)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
     user_id = Column(String(50), nullable=False, index=True)

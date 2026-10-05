@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, or_
 from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
@@ -359,13 +359,16 @@ def list_conversations(bot_id: int, q: str = Query("", max_length=100),
                 .filter(ConversationRead.bot_id == bot_id,
                         ConversationRead.user_id == r.user_id).first())
         unread = 0
+        incoming = or_(Message.sender.is_(None), Message.sender != "admin")
         if read:
             unread = (db.query(func.count(Message.id)).filter(
                 Message.bot_id == bot_id, Message.user_id == r.user_id,
-                Message.created_at > read.last_read_at).scalar() or 0)
+                Message.created_at > read.last_read_at,
+                incoming, Message.message_text != "[admin]").scalar() or 0)
         else:
             unread = (db.query(func.count(Message.id)).filter(
-                Message.bot_id == bot_id, Message.user_id == r.user_id).scalar() or 0)
+                Message.bot_id == bot_id, Message.user_id == r.user_id,
+                incoming, Message.message_text != "[admin]").scalar() or 0)
         last = split_bubbles(r, bot_id)
         last_b = last[-1] if last else {"sender": "user", "text": r.message_text}
         items.append({
@@ -440,8 +443,7 @@ def mark_read(bot_id: int, customer_id: str,
     if not row:
         row = ConversationRead(bot_id=bot_id, user_id=customer_id)
         db.add(row)
-    else:
-        row.last_read_at = datetime.utcnow()
+    row.last_read_at = db.query(func.now()).scalar()
     db.commit()
     return {"ok": True}
 

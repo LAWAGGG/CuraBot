@@ -19,10 +19,9 @@ function initial(name) {
 }
 
 export default function BotChats() {
-  const { bot } = useOutletContext()
+  const { bot, selectedChat: selected, setSelectedChat: setSelected } = useOutletContext()
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
-  const [selected, setSelected] = useState(null)
   const key = `conversations:${bot.id}:${debounced}`
   const { data, loading, error, refresh } = useApi(key, ({ force } = {}) =>
     apiFetch(key, { url: `/api/bots/${bot.id}/conversations`, params: { q: debounced }, force }),

@@ -149,7 +149,7 @@ export default function ChatThread({ bot, user, onBack }) {
   let lastDay = null
 
   return (
-    <div className="flex h-[70vh] flex-col rounded-xl border border-border bg-background">
+    <div className="flex h-[90vh] flex-col rounded-xl border border-border bg-background">
       <div className="flex items-center gap-2 border-b border-border p-3">
         <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="Kembali">
           <ArrowLeft aria-hidden="true" />
@@ -218,13 +218,14 @@ export default function ChatThread({ bot, user, onBack }) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
               e.preventDefault()
               send()
             }
           }}
           placeholder="Tulis balasan..."
-          rows={2}
+          rows={1}
+          className="min-h-0 resize-none"
           disabled={sending}
           aria-label="Tulis balasan"
         />
