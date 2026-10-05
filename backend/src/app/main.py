@@ -18,7 +18,7 @@ from openpyxl import load_workbook
 
 from . import config, security, schemas, telegram_api, gemini_service, excel_service
 from .database import get_db
-from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat
+from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
 
 app = FastAPI(title="CuraBot API")
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
@@ -297,6 +297,75 @@ def get_messages(bot_id: int, page: int = Query(1, ge=1), limit: int = Query(20,
             "extracted_data": r.extracted_data, "response_time": r.response_time,
             "model_used": r.model_used, "created_at": str(r.created_at),
         } for r in rows]}
+
+
+def split_bubbles(r, bot_id):
+    bubbles = []
+    if r.message_text and r.message_text != "[admin]":
+        bubbles.append({
+            "id": f"{r.id}-u", "sender": "user", "text": r.message_text,
+            "media_url": config.upload_url(bot_id, r.media_path),
+            "created_at": str(r.created_at),
+        })
+    if r.response_text:
+        bubbles.append({
+            "id": f"{r.id}-b", "sender": r.sender if r.sender == "admin" else "bot",
+            "text": r.response_text, "media_url": None,
+            "created_at": str(r.created_at),
+        })
+    return bubbles
+
+
+@app.get("/api/bots/{bot_id}/conversations")
+def list_conversations(bot_id: int, q: str = Query("", max_length=100),
+                       page: int = Query(1, ge=1), limit: int = Query(20, le=100),
+                       user_id: int = Depends(security.get_current_user),
+                       db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    sub = (db.query(Message.user_id, func.max(Message.created_at).label("last_at"))
+           .filter(Message.bot_id == bot_id).group_by(Message.user_id)
+           .subquery())
+    rows = (db.query(Message).join(sub,
+            (Message.user_id == sub.c.user_id) & (Message.created_at == sub.c.last_at))
+            .filter(Message.bot_id == bot_id).order_by(desc(Message.created_at)).all())
+    items = []
+    for r in rows:
+        order = (db.query(ExtractedOrder)
+                 .filter(ExtractedOrder.bot_id == bot_id,
+                         ExtractedOrder.customer_user_id == r.user_id,
+                         ExtractedOrder.customer_name.isnot(None))
+                 .order_by(desc(ExtractedOrder.created_at)).first())
+        read = (db.query(ConversationRead)
+                .filter(ConversationRead.bot_id == bot_id,
+                        ConversationRead.user_id == r.user_id).first())
+        unread = 0
+        if read:
+            unread = (db.query(func.count(Message.id)).filter(
+                Message.bot_id == bot_id, Message.user_id == r.user_id,
+                Message.created_at > read.last_read_at).scalar() or 0)
+        else:
+            unread = (db.query(func.count(Message.id)).filter(
+                Message.bot_id == bot_id, Message.user_id == r.user_id).scalar() or 0)
+        last = split_bubbles(r, bot_id)
+        last_b = last[-1] if last else {"sender": "user", "text": r.message_text}
+        items.append({
+            "user_id": r.user_id,
+            "customer_name": order.customer_name if order else None,
+            "last_text": last_b.get("text") or "",
+            "last_sender": last_b.get("sender") or "user",
+            "last_created_at": str(r.created_at),
+            "unread_count": unread,
+        })
+    needle = (q or "").strip().lower()
+    if needle:
+        items = [i for i in items
+                 if needle in (i["customer_name"] or "").lower()
+                 or needle in i["user_id"].lower()
+                 or needle in (i["last_text"] or "").lower()]
+    total = len(items)
+    start = (page - 1) * limit
+    return {"total": total, "page": page, "limit": limit,
+            "conversations": items[start:start + limit]}
 
 
 # ---------- ORDERS ----------
