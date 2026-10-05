@@ -22,42 +22,62 @@ export default function ChatThread({ bot, user, onBack }) {
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [preview, setPreview] = useState(null)
+  const [failedMedia, setFailedMedia] = useState(() => new Set())
   const boxRef = useRef(null)
+  const mountedRef = useRef(true)
+  const loadingTopRef = useRef(false)
 
   const uid = encodeURIComponent(user.user_id)
   const threadKey = `thread:${bot.id}:${user.user_id}`
 
   const scrollBottom = () => {
     requestAnimationFrame(() => {
-      if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
+      if (mountedRef.current && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
     })
   }
 
   useEffect(() => {
+    mountedRef.current = true
     api.post(`/api/bots/${bot.id}/conversations/${uid}/read`).catch(() => {})
     apiFetch(threadKey, {
       url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
       force: true,
-    }).then((d) => { setBubbles(d.bubbles ?? []); setHasMore(d.has_more); scrollBottom() })
-      .catch((e) => toast.error(errorMessage(e)))
+    }).then((d) => {
+      if (!mountedRef.current) return
+      setBubbles(d.bubbles ?? [])
+      setHasMore(d.has_more)
+      scrollBottom()
+    }).catch((e) => {
+      if (mountedRef.current) toast.error(errorMessage(e))
+    })
+    return () => { mountedRef.current = false }
   }, [bot.id, threadKey, uid])
 
   const loadOlder = async () => {
-    if (!hasMore || loadingTop || bubbles.length === 0) return
-    setLoadingTop(true)
+    if (!hasMore || loadingTopRef.current || bubbles.length === 0) return
     const firstId = Number(String(bubbles[0].id).split('-')[0])
+    if (!Number.isFinite(firstId)) return
+    loadingTopRef.current = true
+    setLoadingTop(true)
     try {
       const d = await apiFetch(threadKey, {
         url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
         params: { before_id: firstId },
       })
+      if (!mountedRef.current) return
       const box = boxRef.current
       const prevH = box ? box.scrollHeight : 0
       setBubbles((p) => [...(d.bubbles ?? []), ...p])
       setHasMore(d.has_more)
-      requestAnimationFrame(() => { if (box) box.scrollTop = box.scrollHeight - prevH })
-    } catch (e) { toast.error(errorMessage(e)) }
-    finally { setLoadingTop(false) }
+      requestAnimationFrame(() => {
+        if (mountedRef.current && box) box.scrollTop = box.scrollHeight - prevH
+      })
+    } catch (e) {
+      if (mountedRef.current) toast.error(errorMessage(e))
+    } finally {
+      loadingTopRef.current = false
+      if (mountedRef.current) setLoadingTop(false)
+    }
   }
 
   const handleScroll = () => {
@@ -74,12 +94,16 @@ export default function ChatThread({ bot, user, onBack }) {
     scrollBottom()
     try {
       await api.post(`/api/bots/${bot.id}/conversations/${uid}/reply`, { text: msg })
+      if (!mountedRef.current) return
       invalidate(`conversations:${bot.id}`)
       invalidate(threadKey)
     } catch (e) {
+      if (!mountedRef.current) return
       setBubbles((p) => p.filter((b) => b.id !== optimistic.id))
       toast.error(errorMessage(e))
-    } finally { setSending(false) }
+    } finally {
+      if (mountedRef.current) setSending(false)
+    }
   }
 
   const name = displayName(user)
@@ -121,10 +145,23 @@ export default function ChatThread({ bot, user, onBack }) {
                 ) : null}
                 <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
                   <div className={`max-w-[75%] rounded-xl px-3 py-2 text-sm ${mine ? 'bg-primary/10' : 'border border-border bg-background'}`}>
-                    {mediaOk ? (
+                    {mediaOk && !failedMedia.has(b.id) ? (
                       <button type="button" onClick={() => setPreview(b.media_url)} className="block">
-                        <img src={b.media_url} alt="Lampiran chat" className="max-h-48 rounded-lg object-cover" loading="lazy" />
+                        <img
+                          src={b.media_url}
+                          alt="Lampiran chat"
+                          className="max-h-48 rounded-lg object-cover"
+                          loading="lazy"
+                          onError={() => setFailedMedia((p) => new Set(p).add(b.id))}
+                        />
                       </button>
+                    ) : mediaOk ? (
+                      <p className="text-sm text-muted-foreground">
+                        Lampiran tidak dapat dimuat.
+                        <button type="button" className="ml-1 text-primary underline" onClick={() => setFailedMedia((p) => { const next = new Set(p); next.delete(b.id); return next })}>
+                          Coba lagi
+                        </button>
+                      </p>
                     ) : null}
                     {b.text ? <p className="break-words whitespace-pre-wrap">{b.text}</p> : null}
                     <p className="mt-1 text-[11px] text-muted-foreground">{formatDateTime(b.created_at)}</p>
@@ -158,9 +195,9 @@ export default function ChatThread({ bot, user, onBack }) {
 
       <Dialog open={!!preview} onOpenChange={(open) => { if (!open) setPreview(null) }}>
         <DialogContent className="sm:max-w-lg">
-          {preview ? <img src={preview} alt="Pratinjau media" className="max-h-[70vh] w-full rounded-lg object-contain" /> : null}
+          {preview ? <img src={preview} alt="Pratinjau media" className="max-h-[70vh] w-full rounded-lg object-contain" onError={() => setPreview(null)} /> : null}
           {preview ? (
-            <a href={preview} target="_blank" rel="noreferrer" className="text-sm text-primary underline underline-offset-4">
+            <a href={preview} target="_blank" rel="noreferrer noopener" className="text-sm text-primary underline underline-offset-4">
               Buka tab baru
             </a>
           ) : null}
