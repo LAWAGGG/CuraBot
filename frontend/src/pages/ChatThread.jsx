@@ -42,6 +42,8 @@ export default function ChatThread({ bot, user, onBack }) {
   useEffect(() => {
     mountedRef.current = true
     const generation = ++generationRef.current
+    loadingTopRef.current = false
+    setFailedMedia(new Set())
     api.post(`/api/bots/${bot.id}/conversations/${uid}/read`).catch(() => {})
     apiFetch(threadKey, {
       url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
@@ -80,8 +82,10 @@ export default function ChatThread({ bot, user, onBack }) {
     } catch (e) {
       if (isCurrent(generation)) toast.error(errorMessage(e))
     } finally {
-      loadingTopRef.current = false
-      if (isCurrent(generation)) setLoadingTop(false)
+      if (isCurrent(generation)) {
+        loadingTopRef.current = false
+        setLoadingTop(false)
+      }
     }
   }
 

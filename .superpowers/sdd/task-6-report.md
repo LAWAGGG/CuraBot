@@ -153,3 +153,18 @@ npm run build: exit 0
 ```
 
 Generation guards added in `frontend/src/pages/ChatThread.jsx` for initial load, pagination, send completion, toast, scroll, state updates, and cache invalidation.
+
+## Final request-state isolation verification
+
+### Command
+`npm run lint && npm run build` from `frontend`
+
+### Output
+```text
+npm run lint: exit 0
+5 warnings total: 4 pre-existing fast-refresh warnings plus react(set-state-in-effect) at src/pages/ChatThread.jsx:46:5.
+npm run build: exit 0
+✓ built
+```
+
+Pagination lock clears only for current generation; failed media state resets when thread identity changes.
