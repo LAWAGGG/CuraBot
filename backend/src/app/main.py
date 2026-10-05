@@ -73,7 +73,7 @@ def public_bot(bot: Bot) -> dict:
         "telegram_bot_name": bot.telegram_bot_name,
         "telegram_link": bot.telegram_link,
         "payment_info": bot.payment_info,
-        "qris_image_url": f"{config.BASE_URL}/uploads/{bot.id}/{os.path.basename(bot.qris_image_path)}" if bot.qris_image_path else None,
+        "qris_image_url": config.upload_url(bot.id, bot.qris_image_path),
         "status": bot.status,
         "created_at": str(bot.created_at),
     }
@@ -92,7 +92,7 @@ def order_to_dict(o: ExtractedOrder) -> dict:
         "customer_phone": o.customer_phone,
         "status": o.status,
         "rejection_reason": o.rejection_reason,
-        "payment_proof_url": f"{config.BASE_URL}/uploads/{o.bot_id}/{os.path.basename(o.payment_proof_path)}" if o.payment_proof_path else None,
+        "payment_proof_url": config.upload_url(o.bot_id, o.payment_proof_path),
         "created_at": str(o.created_at),
         "updated_at": str(o.updated_at),
     }
@@ -248,7 +248,7 @@ def upload_qris(bot_id: int, file: UploadFile = File(...),
         f.write(data)
     bot.qris_image_path = dest
     db.commit()
-    return {"ok": True, "qris_image_url": f"{config.BASE_URL}/uploads/{bot_id}/{os.path.basename(dest)}"}
+    return {"ok": True, "qris_image_url": config.upload_url(bot_id, dest)}
 
 
 @app.get("/api/files/{bot_id}")
@@ -271,7 +271,9 @@ def delete_file(file_id: int, user_id: int = Depends(security.get_current_user),
     if not row:
         raise HTTPException(404, "File not found")
     try:
-        os.remove(row.file_path)
+        resolved = config.resolve_upload_path(row.file_path)
+        if resolved:
+            os.remove(resolved)
     except OSError:
         pass
     db.delete(row)
@@ -354,6 +356,42 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
             telegram_api.send_message(config.TELEGRAM_TOKEN, msg_row.chat_id, note)
         except Exception:
             pass
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/orders/{order_id}/remind")
+def remind_payment(bot_id: int, order_id: int, user_id: int = Depends(security.get_current_user),
+                   db: Session = Depends(get_db)):
+    bot = get_bot_or_404(db, user_id, bot_id)
+    order = db.query(ExtractedOrder).filter(ExtractedOrder.id == order_id,
+                                            ExtractedOrder.bot_id == bot_id).first()
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order.payment_proof_path:
+        raise HTTPException(400, "Payment proof already received")
+    chat_id = None
+    if order.message_id:
+        msg = db.query(Message).filter(Message.id == order.message_id).first()
+        if msg and msg.chat_id:
+            chat_id = msg.chat_id
+    if not chat_id:
+        latest_msg = (db.query(Message)
+                      .filter(Message.bot_id == bot_id, Message.user_id == order.customer_user_id)
+                      .order_by(desc(Message.created_at)).first())
+        if latest_msg and latest_msg.chat_id:
+            chat_id = latest_msg.chat_id
+    if not chat_id:
+        raise HTTPException(404, "Customer chat not found")
+    total = f"Rp{float(order.total_price):,.0f}".replace(",", ".") if order.total_price is not None else "-"
+    text = (f"Halo {order.customer_name or 'Kak'}! Ini pengingat pembayaran untuk pesanan #{order.id} "
+            f"sebesar {total}.\n")
+    if bot.payment_info:
+        text += f"{bot.payment_info}\n"
+    text += "Mohon segera membayar dan kirimkan foto/screenshot bukti pembayaran di chat ini ya. Terima kasih!"
+    try:
+        telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, text)
+    except Exception as e:
+        raise HTTPException(502, f"Failed to send Telegram reminder: {e}")
     return {"ok": True}
 
 
@@ -556,13 +594,22 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum menyatakan pesanan sudah dicatat/diubah, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
                       "Baru setelah customer mengiyakan, katakan pesanan sudah tercatat/terupdate. "
                       "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi.")
-    if bot.payment_info and latest_order and latest_order.products and latest_order.total_price is not None \
-            and latest_order.status in ("pending", "incomplete"):
-        system_prompt += ("\n\nTAHAP PEMBAYARAN: Pesanan customer sudah lengkap. Jika customer menanyakan cara bayar/pembayaran/qris/transfer, "
-                          "sampaikan instruksi berikut persis dari penjual: " + bot.payment_info)
+    addr_ok = bool((latest_order.delivery_address or "").strip()) if latest_order else False
+    data_complete = bool(
+        latest_order and latest_order.customer_name and latest_order.customer_phone
+        and (latest_order.products or []) and latest_order.total_price is not None and addr_ok
+    )
+    if bot.payment_info and data_complete and latest_order.status in ("pending", "incomplete"):
+        total_str = f"Rp{float(latest_order.total_price):,.0f}".replace(",", ".")
+        system_prompt += ("\n\nTAHAP PEMBAYARAN: Data pesanan customer sudah lengkap. "
+                          "Tegaskan dan ingatkan customer agar segera membayar sekarang. "
+                          f"Total yang harus dibayar: {total_str}. "
+                          "Sampaikan instruksi berikut persis dari penjual: " + bot.payment_info)
         if not latest_order.payment_proof_path:
-            system_prompt += ("\n\nBUKTI BAYAR: Jika customer mengatakan sudah membayar/transfer tetapi belum mengirimkan bukti, "
-                              "WAJIB minta customer mengirimkan foto/screenshot bukti pembayaran terlebih dahulu sebelum pesanan diproses.")
+            system_prompt += ("\n\nPENGINGAT BUKTI BAYAR: Customer belum mengirim bukti pembayaran. "
+                              "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
+                              "bukti pembayaran di chat ini sebelum pesanan diproses. "
+                              "Ikuti gaya bahasa pada system prompt.")
 
     start = time.time()
     try:
@@ -579,7 +626,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     # customer minta qris & ada gambar QRIS -> kirim gambarnya
     if bot.qris_image_path and "qris" in text.lower():
         try:
-            telegram_api.send_photo(token, chat_id, bot.qris_image_path, caption="QRIS pembayaran")
+            telegram_api.send_photo(token, chat_id, config.resolve_upload_path(bot.qris_image_path), caption="QRIS pembayaran")
         except Exception:
             pass
 

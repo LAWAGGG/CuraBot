@@ -25,7 +25,30 @@ CORS_ORIGIN_REGEX = os.getenv("CORS_ORIGIN_REGEX") or (
     r"|^https://[a-z0-9-]+\.trycloudflare\.com$"
 )
 
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_upload_env = os.getenv("UPLOAD_DIR", "uploads")
+UPLOAD_DIR = _upload_env if os.path.isabs(_upload_env) else os.path.join(_BASE_DIR, _upload_env)
+
+
+def resolve_upload_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    if os.path.isabs(path):
+        return path
+    normalized = path.replace("\\", "/")
+    if normalized.startswith("uploads/"):
+        normalized = normalized[len("uploads/"):]
+    while normalized.startswith("../"):
+        normalized = normalized[3:]
+    return os.path.join(UPLOAD_DIR, normalized)
+
+
+def upload_url(bot_id: int, path: str | None) -> str | None:
+    if not path:
+        return None
+    return f"{BASE_URL}/uploads/{bot_id}/{os.path.basename(path)}"
+
+
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(25 * 1024 * 1024)))
 MAX_FILES_PER_BOT = int(os.getenv("MAX_FILES_PER_BOT", "10"))
 

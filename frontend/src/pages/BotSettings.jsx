@@ -125,7 +125,7 @@ export default function BotSettings() {
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="w-full space-y-6">
       <form onSubmit={save} className="space-y-6">
         <section className="space-y-4 rounded-xl border border-border bg-background p-5">
           <h2 className="font-semibold">Informasi bot</h2>

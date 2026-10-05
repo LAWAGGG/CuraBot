@@ -15,6 +15,16 @@ import { toast } from 'sonner'
 
 import EmptyState from '@/components/EmptyState'
 import StatusBadge from '@/components/StatusBadge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
   Drawer,
@@ -56,6 +66,8 @@ const STATUS_OPTIONS = [
   { value: 'completed', label: 'Selesai' },
   { value: 'rejected', label: 'Ditolak' },
 ]
+
+const NEEDS_PROOF_STATUS = ['confirmed', 'shipped', 'completed']
 
 function productSummary(products = []) {
   if (products.length === 0) return '—'
@@ -154,6 +166,7 @@ export default function BotOrders() {
   const [rejecting, setRejecting] = useState(null)
   const [reason, setReason] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [warning, setWarning] = useState(null)
 
   const ordersKey = `orders:${bot.id}:${status}:${page}`
   const { data, loading, error, refresh } = useApi(ordersKey, () =>
@@ -191,7 +204,30 @@ export default function BotOrders() {
       setReason('')
       return
     }
+    if (order.status === 'incomplete' && NEEDS_PROOF_STATUS.includes(nextStatus) && !order.payment_proof_url) {
+      setWarning({ order, nextStatus })
+      return
+    }
     applyStatus(order, nextStatus)
+  }
+
+  const remindAndApply = async () => {
+    if (!warning) return
+    const { order, nextStatus } = warning
+    setBusyId(order.id)
+    try {
+      await apiFetch(null, {
+        method: 'post',
+        url: `/api/bots/${bot.id}/orders/${order.id}/remind`,
+      })
+      toast.success('Peringatan pembayaran dikirim ke customer via Telegram.')
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      setBusyId(null)
+    }
+    setWarning(null)
+    await applyStatus(order, nextStatus)
   }
 
   const confirmReject = async () => {
@@ -425,6 +461,37 @@ export default function BotOrders() {
       )}
 
       <OrderDetail order={detail} onClose={() => setDetail(null)} />
+
+      <AlertDialog open={Boolean(warning)} onOpenChange={(open) => (!open ? setWarning(null) : null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pesanan #{warning?.order.id} belum ada bukti bayar</AlertDialogTitle>
+            <AlertDialogDescription>
+              {warning?.order.customer_name || 'Pelanggan'} · {productSummary(warning?.order.products)} ·{' '}
+              {formatRupiah(warning?.order.total_price)}. Pastikan customer membayar dan mengirim bukti
+              sebelum status dinaikkan ke {warning?.nextStatus}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(busyId)}>Batal</AlertDialogCancel>
+              <AlertDialogCancel
+              onClick={() => applyStatus(warning.order, warning.nextStatus)}
+              disabled={Boolean(busyId)}
+            >
+              Lewati
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault()
+                remindAndApply()
+              }}
+              disabled={Boolean(busyId)}
+            >
+              Kirim peringatan + lanjutkan
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <Drawer open={Boolean(rejecting)} onOpenChange={(open) => (!open ? setRejecting(null) : null)}>
         <DrawerContent className="sm:max-w-md">
