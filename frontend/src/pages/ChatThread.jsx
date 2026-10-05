@@ -25,36 +25,41 @@ export default function ChatThread({ bot, user, onBack }) {
   const [failedMedia, setFailedMedia] = useState(() => new Set())
   const boxRef = useRef(null)
   const mountedRef = useRef(true)
+  const generationRef = useRef(0)
   const loadingTopRef = useRef(false)
 
   const uid = encodeURIComponent(user.user_id)
   const threadKey = `thread:${bot.id}:${user.user_id}`
 
-  const scrollBottom = () => {
+  const isCurrent = (generation) => mountedRef.current && generation === generationRef.current
+
+  const scrollBottom = (generation = generationRef.current) => {
     requestAnimationFrame(() => {
-      if (mountedRef.current && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
+      if (isCurrent(generation) && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
     })
   }
 
   useEffect(() => {
     mountedRef.current = true
+    const generation = ++generationRef.current
     api.post(`/api/bots/${bot.id}/conversations/${uid}/read`).catch(() => {})
     apiFetch(threadKey, {
       url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
       force: true,
     }).then((d) => {
-      if (!mountedRef.current) return
+      if (!isCurrent(generation)) return
       setBubbles(d.bubbles ?? [])
       setHasMore(d.has_more)
-      scrollBottom()
+      scrollBottom(generation)
     }).catch((e) => {
-      if (mountedRef.current) toast.error(errorMessage(e))
+      if (isCurrent(generation)) toast.error(errorMessage(e))
     })
     return () => { mountedRef.current = false }
   }, [bot.id, threadKey, uid])
 
   const loadOlder = async () => {
-    if (!hasMore || loadingTopRef.current || bubbles.length === 0) return
+    const generation = generationRef.current
+    if (!isCurrent(generation) || !hasMore || loadingTopRef.current || bubbles.length === 0) return
     const firstId = Number(String(bubbles[0].id).split('-')[0])
     if (!Number.isFinite(firstId)) return
     loadingTopRef.current = true
@@ -64,19 +69,19 @@ export default function ChatThread({ bot, user, onBack }) {
         url: `/api/bots/${bot.id}/conversations/${uid}/messages`,
         params: { before_id: firstId },
       })
-      if (!mountedRef.current) return
+      if (!isCurrent(generation)) return
       const box = boxRef.current
       const prevH = box ? box.scrollHeight : 0
       setBubbles((p) => [...(d.bubbles ?? []), ...p])
       setHasMore(d.has_more)
       requestAnimationFrame(() => {
-        if (mountedRef.current && box) box.scrollTop = box.scrollHeight - prevH
+        if (isCurrent(generation) && box) box.scrollTop = box.scrollHeight - prevH
       })
     } catch (e) {
-      if (mountedRef.current) toast.error(errorMessage(e))
+      if (isCurrent(generation)) toast.error(errorMessage(e))
     } finally {
       loadingTopRef.current = false
-      if (mountedRef.current) setLoadingTop(false)
+      if (isCurrent(generation)) setLoadingTop(false)
     }
   }
 
@@ -85,24 +90,25 @@ export default function ChatThread({ bot, user, onBack }) {
   }
 
   const send = async () => {
+    const generation = generationRef.current
     const msg = text.trim()
-    if (!msg || sending) return
+    if (!isCurrent(generation) || !msg || sending) return
     setSending(true)
     const optimistic = { id: `tmp-${Date.now()}`, sender: 'admin', text: msg, created_at: new Date().toISOString() }
     setBubbles((p) => [...p, optimistic])
     setText('')
-    scrollBottom()
+    scrollBottom(generation)
     try {
       await api.post(`/api/bots/${bot.id}/conversations/${uid}/reply`, { text: msg })
-      if (!mountedRef.current) return
+      if (!isCurrent(generation)) return
       invalidate(`conversations:${bot.id}`)
       invalidate(threadKey)
     } catch (e) {
-      if (!mountedRef.current) return
+      if (!isCurrent(generation)) return
       setBubbles((p) => p.filter((b) => b.id !== optimistic.id))
       toast.error(errorMessage(e))
     } finally {
-      if (mountedRef.current) setSending(false)
+      if (isCurrent(generation)) setSending(false)
     }
   }
 

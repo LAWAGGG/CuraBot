@@ -134,3 +134,22 @@ dist/assets/index-e9_2bUaF.js                              460.39 kB │ gzip: 1
 ```
 
 Exit status: lint 0, build 0.
+
+## Final stale-request fix verification
+
+### Command
+`npm run lint && npm run build` from `frontend`
+
+### Output
+```text
+npm run lint: exit 0
+4 pre-existing react(only-export-components) warnings:
+src/components/ui/badge.jsx:47:17
+src/components/ui/button.jsx:63:18
+src/components/ui/tabs.jsx:86:52
+src/lib/auth.jsx:73:17
+npm run build: exit 0
+✓ built
+```
+
+Generation guards added in `frontend/src/pages/ChatThread.jsx` for initial load, pagination, send completion, toast, scroll, state updates, and cache invalidation.
