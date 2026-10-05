@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { api, apiFetch, errorMessage, invalidate } from '@/lib/api'
+import { useBotEvents } from '@/hooks/useBotEvents'
 import { formatDateTime, isValidUrl } from '@/lib/utils'
 
 function dayKey(ts) {
@@ -13,6 +14,20 @@ function dayKey(ts) {
 
 function displayName(user) {
   return user.customer_name || `User ${String(user.user_id).slice(-6)}`
+}
+
+function mergeThreadBubbles(prev, incoming) {
+  const byId = new Map()
+  for (const item of prev) byId.set(item.id, item)
+  for (const bubble of incoming) {
+    if (bubble.sender === 'admin' && bubble.text) {
+      for (const [id, item] of byId) {
+        if (item.sender === 'admin' && item.text === bubble.text && String(id).startsWith('tmp-')) byId.delete(id)
+      }
+    }
+    byId.set(bubble.id, bubble)
+  }
+  return [...byId.values()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
 }
 
 export default function ChatThread({ bot, user, onBack }) {
@@ -65,6 +80,19 @@ export default function ChatThread({ bot, user, onBack }) {
     })
     return () => { mountedRef.current = false }
   }, [bot.id, threadKey, uid])
+
+  useBotEvents(bot.id, (event) => {
+    if (event.type !== 'conversation_updated') return
+    const item = event.data?.item
+    if (item?.user_id !== user.user_id) return
+    const incoming = event.data?.bubbles
+    if (!Array.isArray(incoming) || incoming.length === 0) return
+    setBubbles((previous) => mergeThreadBubbles(previous, incoming))
+    api.post(`/api/bots/${bot.id}/conversations/${uid}/read`).catch(() => {})
+    requestAnimationFrame(() => {
+      if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight
+    })
+  })
 
   useEffect(() => {
     let cancelled = false

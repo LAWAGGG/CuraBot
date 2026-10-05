@@ -1,6 +1,8 @@
 import hmac
 import json
 import os
+import queue
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -8,7 +10,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -329,6 +331,109 @@ def split_bubbles(r, bot_id):
     return bubbles
 
 
+class BotEventBroker:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._subscribers: dict[int, list[queue.Queue]] = {}
+
+    def subscribe(self, bot_id: int) -> queue.Queue:
+        q = queue.Queue(maxsize=100)
+        with self._lock:
+            self._subscribers.setdefault(bot_id, []).append(q)
+        return q
+
+    def unsubscribe(self, bot_id: int, q: queue.Queue):
+        with self._lock:
+            subs = self._subscribers.get(bot_id, [])
+            if q in subs:
+                subs.remove(q)
+            if not subs:
+                self._subscribers.pop(bot_id, None)
+
+    def publish(self, bot_id: int, event: str, data: dict):
+        payload = f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+        with self._lock:
+            subs = list(self._subscribers.get(bot_id, ()))
+        for q in subs:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                pass
+
+
+broker = BotEventBroker()
+
+
+def conversation_item(db: Session, bot_id: int, user_id_value: str) -> dict | None:
+    r = (db.query(Message)
+         .filter(Message.bot_id == bot_id, Message.user_id == user_id_value)
+         .order_by(desc(Message.created_at), desc(Message.id)).first())
+    if not r:
+        return None
+    order = (db.query(ExtractedOrder)
+             .filter(ExtractedOrder.bot_id == bot_id,
+                     ExtractedOrder.customer_user_id == r.user_id,
+                     ExtractedOrder.customer_name.isnot(None))
+             .order_by(desc(ExtractedOrder.created_at)).first())
+    read = (db.query(ConversationRead)
+            .filter(ConversationRead.bot_id == bot_id,
+                    ConversationRead.user_id == r.user_id).first())
+    incoming = or_(Message.sender.is_(None), Message.sender != "admin")
+    if read:
+        unread = (db.query(func.count(Message.id)).filter(
+            Message.bot_id == bot_id, Message.user_id == r.user_id,
+            Message.created_at > read.last_read_at,
+            incoming, Message.message_text != "[admin]").scalar() or 0)
+    else:
+        unread = (db.query(func.count(Message.id)).filter(
+            Message.bot_id == bot_id, Message.user_id == r.user_id,
+            incoming, Message.message_text != "[admin]").scalar() or 0)
+    last = split_bubbles(r, bot_id)
+    last_b = last[-1] if last else {"sender": "user", "text": r.message_text}
+    return {
+        "user_id": r.user_id,
+        "customer_name": order.customer_name if order else None,
+        "last_text": last_b.get("text") or "",
+        "last_sender": last_b.get("sender") or "user",
+        "last_created_at": str(r.created_at),
+        "unread_count": unread,
+    }
+
+
+def emit_conversation(db: Session, bot_id: int, user_id_value: str, msg: Message | None = None):
+    item = conversation_item(db, bot_id, user_id_value)
+    if not item:
+        return
+    data = {"item": item}
+    if msg is not None:
+        data["bubbles"] = split_bubbles(msg, bot_id)
+    broker.publish(bot_id, "conversation_updated", data)
+
+
+@app.get("/api/bots/{bot_id}/events")
+def bot_events(bot_id: int, user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    q = broker.subscribe(bot_id)
+
+    def stream():
+        try:
+            yield ": connected\n\n"
+            while True:
+                try:
+                    yield q.get(timeout=25)
+                except queue.Empty:
+                    yield ": hb\n\n"
+        finally:
+            broker.unsubscribe(bot_id, q)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/bots/{bot_id}/conversations")
 def list_conversations(bot_id: int, q: str = Query("", max_length=100),
                        page: int = Query(1, ge=1), limit: int = Query(20, le=100),
@@ -428,6 +533,7 @@ def reply_thread(bot_id: int, customer_id: str, body: schemas.ReplyIn,
                   sender="admin", message_text="[admin]", response_text=body.text.strip())
     db.add(msg)
     db.commit()
+    emit_conversation(db, bot_id, customer_id, msg)
     return {"ok": True}
 
 
@@ -445,6 +551,7 @@ def mark_read(bot_id: int, customer_id: str,
         db.add(row)
     row.last_read_at = db.query(func.now()).scalar()
     db.commit()
+    emit_conversation(db, bot_id, customer_id)
     return {"ok": True}
 
 
@@ -637,11 +744,14 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                     dest = os.path.join(dest_dir, f"proof_{int(time.time())}.jpg")
                     with open(dest, "wb") as f:
                         f.write(data)
-                    db.add(Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
-                                   sender="user", media_path=dest,
-                                   message_text=caption or "[foto]",
-                                   response_text=""))
+                    photo_msg = Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
+                                       sender="user", media_path=dest,
+                                       message_text=caption or "[foto]",
+                                       response_text="")
+                    db.add(photo_msg)
                     db.commit()
+                    db.refresh(photo_msg)
+                    emit_conversation(db, bot.id, str(chat_id), photo_msg)
                     latest = (db.query(ExtractedOrder)
                               .join(Message, Message.id == ExtractedOrder.message_id)
                               .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
@@ -878,6 +988,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
 
+    emit_conversation(db, bot_id, uid, msg)
     return {"ok": True}
 
 

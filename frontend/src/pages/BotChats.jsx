@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { useBotEvents } from '@/hooks/useBotEvents'
 import { formatDateTime } from '@/lib/utils'
 import ChatThread from './ChatThread'
 
@@ -18,23 +19,46 @@ function initial(name) {
   return (String(name ?? 'U').trim().charAt(0) || 'U').toUpperCase()
 }
 
+function matchesQuery(item, q) {
+  const needle = (q ?? '').trim().toLowerCase()
+  if (!needle) return true
+  return `${item.customer_name ?? ''} ${item.user_id ?? ''} ${item.last_text ?? ''}`.toLowerCase().includes(needle)
+}
+
+function mergeConversation(data, item, q) {
+  const conversations = data?.conversations ?? []
+  const index = conversations.findIndex((c) => c.user_id === item.user_id)
+  if (!matchesQuery(item, q)) return data
+  let next
+  if (index >= 0) {
+    next = [...conversations]
+    const updated = { ...next[index], ...item }
+    next.splice(index, 1)
+    next.unshift(updated)
+  } else {
+    next = [{ ...item }, ...conversations]
+  }
+  return { ...data, total: index >= 0 ? data.total : (data.total ?? 0) + 1, conversations: next }
+}
+
 export default function BotChats() {
   const { bot, selectedChat: selected, setSelectedChat: setSelected } = useOutletContext()
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
   const key = `conversations:${bot.id}:${debounced}`
-  const { data, loading, error, refresh } = useApi(key, ({ force } = {}) =>
+  const { data, loading, error, refresh, setData } = useApi(key, ({ force } = {}) =>
     apiFetch(key, { url: `/api/bots/${bot.id}/conversations`, params: { q: debounced }, force }),
   )
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 400)
     return () => clearTimeout(t)
   }, [query])
-  useEffect(() => {
-    if (selected) return undefined
-    const t = setInterval(() => refresh(), 10000)
-    return () => clearInterval(t)
-  }, [refresh, selected])
+  useBotEvents(bot.id, (event) => {
+    if (event.type !== 'conversation_updated') return
+    const item = event.data?.item
+    if (!item) return
+    setData((prev) => (prev ? mergeConversation(prev, item, debounced) : prev))
+  })
   const items = data?.conversations ?? []
   if (selected) {
     return <ChatThread bot={bot} user={selected} onBack={() => { setSelected(null); refresh() }} />
