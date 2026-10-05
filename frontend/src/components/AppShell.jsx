@@ -164,7 +164,7 @@ export default function AppShell() {
               <AccountFooter email={email} onLogout={handleLogout} />
             </DrawerContent>
           </Drawer>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
             <CuraBotLogo className="size-10" />
             <span className="font-bold tracking-tight">CuraBot</span>
           </div>
