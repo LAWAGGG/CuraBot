@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { RefreshCw, Share2 } from 'lucide-react'
@@ -31,10 +31,44 @@ export default function BotLayout() {
   const [shareOpen, setShareOpen] = useState(false)
   const [selectedChat, setSelectedChat] = useState(null)
   const location = useLocation()
+  const mascotRef = useRef(null)
+  const sunglassesRef = useRef(null)
 
   useEffect(() => {
     setSelectedChat(null)
   }, [id, location.pathname])
+
+  useEffect(() => {
+    const target = { x: 0, y: 0 }
+    const current = { x: 0, y: 0 }
+    let raf = 0
+
+    const onMove = (event) => {
+      const box = mascotRef.current?.getBoundingClientRect()
+      if (!box) return
+      const dx = event.clientX - (box.left + box.width / 2)
+      const dy = event.clientY - (box.top + box.height * 0.35)
+      const max = 10
+      target.x = Math.max(-max, Math.min(max, dx / 28))
+      target.y = Math.max(-max, Math.min(max, dy / 28))
+    }
+
+    const tick = () => {
+      current.x += (target.x - current.x) * 0.12
+      current.y += (target.y - current.y) * 0.12
+      if (sunglassesRef.current) {
+        sunglassesRef.current.style.transform = `translate(${current.x.toFixed(2)}px, ${current.y.toFixed(2)}px)`
+      }
+      raf = requestAnimationFrame(tick)
+    }
+
+    window.addEventListener('pointermove', onMove)
+    raf = requestAnimationFrame(tick)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      cancelAnimationFrame(raf)
+    }
+  }, [])
 
   if (loading && !bot) {
     return (
@@ -103,14 +137,29 @@ export default function BotLayout() {
                 <StatusBadge status={bot.status} />
               </div>
             </div>
-            <div className="flex flex-col gap-3 bg-background px-5 pt-4 pb-5 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
+            <div className="relative flex flex-col gap-3 bg-background px-5 pt-4 pb-5 sm:flex-row sm:items-center sm:justify-between">
+              <img
+                ref={mascotRef}
+                src="/mascot-body.svg"
+                alt=""
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-33 -right-2 hidden h-70 w-auto opacity-95 md:block md:drop-shadow-lg"
+              />
+              <img
+                ref={sunglassesRef}
+                src="/mascot-glass.svg"
+                alt=""
+                aria-hidden="true"
+                className="pointer-events-none absolute -top-29 right-1 hidden h-65 w-auto opacity-95 transition-transform duration-75 md:block"
+              />
+
+              <div className="relative z-10 min-w-0">
                 <h1 className="text-xl font-bold tracking-tight break-words sm:text-2xl">{bot.name}</h1>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Dibuat {formatDate(bot.created_at)}
                 </p>
               </div>
-              <Button size="sm" onClick={() => setShareOpen(true)} className="shrink-0">
+              <Button size="sm" onClick={() => setShareOpen(true)} className="relative z-10 shrink-0">
                 <Share2 aria-hidden="true" />
                 Bagikan
               </Button>

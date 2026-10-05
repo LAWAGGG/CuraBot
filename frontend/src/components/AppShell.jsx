@@ -21,8 +21,8 @@ const BOT_TABS = [
 
 function Brand() {
   return (
-    <div className="flex items-center gap-1 px-5 py-5">
-      <CuraBotLogo className="size-20" />
+    <div className="flex items-center gap-2 px-5 py-5">
+      <CuraBotLogo className="size-15" />
       <span className="text-2xl font-bold tracking-tight">CuraBot</span>
     </div>
   )

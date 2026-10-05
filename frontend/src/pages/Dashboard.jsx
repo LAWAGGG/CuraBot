@@ -87,7 +87,7 @@ export default function Dashboard() {
         </Card>
       ) : bots.length === 0 ? (
         <EmptyState
-          image="/CuraBot.svg"
+          image="/CuraBot1.svg"
           imageAlt="CuraBot"
           title="Belum ada bot"
           description="Buat bot pertama Anda — cukup jawab beberapa pertanyaan dan bot siap dibagikan ke pelanggan."

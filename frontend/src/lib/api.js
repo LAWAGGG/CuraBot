@@ -101,23 +101,24 @@ const inflight = new Map()
 export async function apiFetch(key, options = {}) {
   const { method = 'get', url, params, data, ttl = 45000, force = false } = options
   const cacheable = method === 'get' && key
+  const cacheKey = cacheable && params ? `${key}:${new URLSearchParams(params)}` : key
 
   if (cacheable && !force) {
-    const hit = cache.get(key)
+    const hit = cache.get(cacheKey)
     if (hit && hit.expires > Date.now()) return hit.data
-    if (inflight.has(key)) return inflight.get(key)
+    if (inflight.has(cacheKey)) return inflight.get(cacheKey)
   }
 
   const request = api({ method, url, params, data })
     .then((response) => {
-      if (cacheable) cache.set(key, { data: response.data, expires: Date.now() + ttl })
+      if (cacheable) cache.set(cacheKey, { data: response.data, expires: Date.now() + ttl })
       return response.data
     })
     .finally(() => {
-      if (cacheable) inflight.delete(key)
+      if (cacheable) inflight.delete(cacheKey)
     })
 
-  if (cacheable && !force) inflight.set(key, request)
+  if (cacheable && !force) inflight.set(cacheKey, request)
   return request
 }
 
