@@ -600,6 +600,7 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
     # customer mengirim foto bukti pembayaran -> simpan & teruskan ke dashboard, status TIDAK diubah AI
     photos = message.get("photo") or []
     if photos:
+        caption = (message.get("caption") or "").strip()
         chat_id = message.get("chat", {}).get("id")
         binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
         if binding:
@@ -614,6 +615,11 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
                     dest = os.path.join(dest_dir, f"proof_{int(time.time())}.jpg")
                     with open(dest, "wb") as f:
                         f.write(data)
+                    db.add(Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
+                                   sender="user", media_path=dest,
+                                   message_text=caption or "[foto]",
+                                   response_text=""))
+                    db.commit()
                     latest = (db.query(ExtractedOrder)
                               .join(Message, Message.id == ExtractedOrder.message_id)
                               .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
@@ -627,7 +633,9 @@ async def telegram_webhook(payload: dict, db: Session = Depends(get_db)):
                 except Exception:
                     telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                               "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
-        return {"ok": True}
+        if not caption:
+            return {"ok": True}
+        text = caption
     if not text:
         return {"ok": True}
     chat_id = message.get("chat", {}).get("id")
