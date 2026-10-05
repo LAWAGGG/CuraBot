@@ -375,6 +375,58 @@ def list_conversations(bot_id: int, q: str = Query("", max_length=100),
             "conversations": items[start:start + limit]}
 
 
+@app.get("/api/bots/{bot_id}/conversations/{customer_id}/messages")
+def get_thread(bot_id: int, customer_id: str, before_id: int = Query(0, ge=0),
+               limit: int = Query(30, le=100),
+               user_id: int = Depends(security.get_current_user),
+               db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    q = db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id)
+    if before_id:
+        q = q.filter(Message.id < before_id)
+    rows = q.order_by(desc(Message.created_at), desc(Message.id)).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    bubbles = []
+    for r in reversed(rows):
+        bubbles.extend(split_bubbles(r, bot_id))
+    return {"bubbles": bubbles, "has_more": has_more}
+
+
+@app.post("/api/bots/{bot_id}/conversations/{customer_id}/reply")
+def reply_thread(bot_id: int, customer_id: str, body: schemas.ReplyIn,
+                 user_id: int = Depends(security.get_current_user),
+                 db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    latest = (db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id)
+              .order_by(desc(Message.created_at)).first())
+    if not latest:
+        raise HTTPException(404, "Customer chat not found")
+    try:
+        telegram_api.send_message(config.TELEGRAM_TOKEN, latest.chat_id, body.text.strip())
+    except Exception as e:
+        raise HTTPException(502, f"Failed to send Telegram message: {e}")
+    msg = Message(bot_id=bot_id, user_id=customer_id, chat_id=latest.chat_id,
+                  sender="admin", message_text="[admin]", response_text=body.text.strip())
+    db.add(msg)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/conversations/{customer_id}/read")
+def mark_read(bot_id: int, customer_id: str,
+              user_id: int = Depends(security.get_current_user),
+              db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    row = (db.query(ConversationRead).filter(ConversationRead.bot_id == bot_id,
+           ConversationRead.user_id == customer_id).first())
+    if not row:
+        row = ConversationRead(bot_id=bot_id, user_id=customer_id)
+        db.add(row)
+    db.commit()
+    return {"ok": True}
+
+
 # ---------- ORDERS ----------
 
 @app.get("/api/bots/{bot_id}/orders")
