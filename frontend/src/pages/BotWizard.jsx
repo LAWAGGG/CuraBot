@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import PageHeader from '@/components/PageHeader'
 import { toast } from 'sonner'
 
+import AddressPicker from '@/components/AddressPicker'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import Stepper from '@/components/Stepper'
 import UploadDropzone from '@/components/UploadDropzone'
@@ -311,6 +312,10 @@ export default function BotWizard() {
                     aria-invalid={Boolean(errors.address)}
                   />
                   {fieldError('address')}
+                  <AddressPicker
+                    value={answers.address}
+                    onChange={(address) => handleAnswer({ address })}
+                  />
                 </div>
               ) : null}
               {answers.mode && answers.mode !== 'offline' ? (

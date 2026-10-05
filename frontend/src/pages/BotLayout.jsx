@@ -143,14 +143,14 @@ export default function BotLayout() {
                 src="/mascot-body.svg"
                 alt=""
                 aria-hidden="true"
-                className="pointer-events-none absolute -top-33 -right-2 hidden h-70 w-auto opacity-95 md:block md:drop-shadow-lg"
+                className="pointer-events-none absolute -top-33 -right-2 hidden h-70 w-auto opacity-95 md:block md:drop-shadow-xl"
               />
               <img
                 ref={sunglassesRef}
                 src="/mascot-glass.svg"
                 alt=""
                 aria-hidden="true"
-                className="pointer-events-none absolute -top-29 right-1 hidden h-65 w-auto opacity-95 transition-transform duration-75 md:block"
+                className="pointer-events-none absolute -top-31 right-0 hidden h-65 w-auto opacity-95 transition-transform duration-75 md:block"
               />
 
               <div className="relative z-10 min-w-0">
