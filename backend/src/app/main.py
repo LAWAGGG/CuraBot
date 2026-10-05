@@ -399,9 +399,11 @@ def reply_thread(bot_id: int, customer_id: str, body: schemas.ReplyIn,
                  db: Session = Depends(get_db)):
     get_bot_or_404(db, user_id, bot_id)
     latest = (db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id)
-              .order_by(desc(Message.created_at)).first())
+              .order_by(desc(Message.created_at), desc(Message.id)).first())
     if not latest:
         raise HTTPException(404, "Customer chat not found")
+    if not body.text.strip():
+        raise HTTPException(422, "Reply text empty")
     try:
         telegram_api.send_message(config.TELEGRAM_TOKEN, latest.chat_id, body.text.strip())
     except Exception as e:
@@ -423,6 +425,8 @@ def mark_read(bot_id: int, customer_id: str,
     if not row:
         row = ConversationRead(bot_id=bot_id, user_id=customer_id)
         db.add(row)
+    else:
+        row.last_read_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
 
