@@ -15,7 +15,7 @@ function displayName(c) {
 }
 
 function initial(name) {
-  return (name.trim().charAt(0) || 'U').toUpperCase()
+  return (String(name ?? 'U').trim().charAt(0) || 'U').toUpperCase()
 }
 
 export default function BotChats() {
