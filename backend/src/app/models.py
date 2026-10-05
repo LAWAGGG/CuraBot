@@ -57,6 +57,8 @@ class Message(Base):
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
     user_id = Column(String(50), nullable=False, index=True)
     chat_id = Column(String(50), nullable=False)
+    sender = Column(String(10), nullable=True)
+    media_path = Column(String(500), nullable=True)
     message_text = Column(Text, nullable=False)
     response_text = Column(Text, nullable=False)
     extracted_data = Column(JSON)
@@ -94,3 +96,11 @@ class BotChat(Base):
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
     chat_id = Column(String(50), nullable=False, index=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class ConversationRead(Base):
+    __tablename__ = "conversation_reads"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    user_id = Column(String(50), nullable=False, index=True)
+    last_read_at = Column(DateTime, server_default=func.now())
