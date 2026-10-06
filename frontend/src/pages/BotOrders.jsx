@@ -5,7 +5,6 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
-  Eye,
   MapPin,
   Phone,
   RefreshCw,
@@ -316,7 +315,7 @@ export default function BotOrders() {
               </TableHeader>
               <TableBody>
                 {orders.map((order, index) => (
-                  <TableRow key={order.id} className="rise" style={{ animationDelay: `${index * 50}ms` }}>
+                  <TableRow key={order.id} className="rise cursor-pointer" style={{ animationDelay: `${index * 50}ms` }} onClick={() => setDetail(order)}>
                     <TableCell>
                       <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>
                       <p className="text-xs text-muted-foreground">{order.customer_phone || '—'}</p>
@@ -337,14 +336,6 @@ export default function BotOrders() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setDetail(order)}
-                          aria-label={`Lihat detail pesanan ${order.id}`}
-                        >
-                          <Eye aria-hidden="true" />
-                        </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
                             <Button
@@ -352,6 +343,7 @@ export default function BotOrders() {
                               size="icon-sm"
                               disabled={busyId === order.id}
                               aria-label={`Ubah status pesanan ${order.id}`}
+                              onClick={(e) => e.stopPropagation()}
                             >
                               <ChevronDown aria-hidden="true" />
                             </Button>
@@ -381,7 +373,7 @@ export default function BotOrders() {
 
           <ul className="space-y-3 md:hidden">
             {orders.map((order, index) => (
-              <li key={order.id} style={{ animationDelay: `${index * 60}ms` }} className="rise rounded-xl border border-border bg-background p-4">
+              <li key={order.id} style={{ animationDelay: `${index * 60}ms` }} className="rise cursor-pointer rounded-xl border border-border bg-background p-4" onClick={() => setDetail(order)}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>
@@ -397,10 +389,6 @@ export default function BotOrders() {
                     <p className="text-xs text-muted-foreground">{formatDateTime(order.created_at)}</p>
                   </div>
                   <div className="flex items-center gap-1">
-                    <Button variant="outline" size="sm" onClick={() => setDetail(order)}>
-                      <Eye aria-hidden="true" />
-                      Detail
-                    </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -408,6 +396,7 @@ export default function BotOrders() {
                           size="icon-sm"
                           disabled={busyId === order.id}
                           aria-label={`Ubah status pesanan ${order.id}`}
+                          onClick={(e) => e.stopPropagation()}
                         >
                           <ChevronDown aria-hidden="true" />
                         </Button>
