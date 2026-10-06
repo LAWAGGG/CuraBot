@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import {
   ChevronDown,
@@ -175,6 +175,13 @@ export default function BotOrders() {
     }),
   )
   const orders = data?.orders ?? []
+  // ponytail: klik opsi Select/DropdownMenu yang unmount bisa "jatuh" ke row di bawahnya -> tahan klik row sejenak
+  const suppressRowClick = useRef(0)
+  const guardRowClick = (order) => {
+    if (Date.now() - suppressRowClick.current < 300) return
+    setDetail(order)
+  }
+  const markOverlayClose = () => { suppressRowClick.current = Date.now() }
   const total = data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -255,9 +262,11 @@ export default function BotOrders() {
           <Select
             value={status}
             onValueChange={(value) => {
+              markOverlayClose()
               setStatus(value)
               setPage(1)
             }}
+            onOpenChange={(open) => { if (!open) markOverlayClose() }}
           >
             <SelectTrigger className="w-44" aria-label="Saring status pesanan">
               <SelectValue placeholder="Semua status" />
@@ -315,7 +324,7 @@ export default function BotOrders() {
               </TableHeader>
               <TableBody>
                 {orders.map((order, index) => (
-                  <TableRow key={order.id} className="rise cursor-pointer" style={{ animationDelay: `${index * 50}ms` }} onClick={() => setDetail(order)}>
+                  <TableRow key={order.id} className="rise cursor-pointer" style={{ animationDelay: `${index * 50}ms` }} onClick={() => guardRowClick(order)}>
                     <TableCell>
                       <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>
                       <p className="text-xs text-muted-foreground">{order.customer_phone || '—'}</p>
@@ -336,7 +345,7 @@ export default function BotOrders() {
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1">
-                        <DropdownMenu>
+                        <DropdownMenu onOpenChange={(open) => { if (!open) markOverlayClose() }}>
                           <DropdownMenuTrigger asChild>
                             <Button
                               variant="ghost"
@@ -348,7 +357,7 @@ export default function BotOrders() {
                               <ChevronDown aria-hidden="true" />
                             </Button>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                             <DropdownMenuLabel>Ubah status</DropdownMenuLabel>
                             <DropdownMenuSeparator />
                             {STATUS_OPTIONS.map((option) => (
@@ -373,7 +382,7 @@ export default function BotOrders() {
 
           <ul className="space-y-3 md:hidden">
             {orders.map((order, index) => (
-              <li key={order.id} style={{ animationDelay: `${index * 60}ms` }} className="rise cursor-pointer rounded-xl border border-border bg-background p-4" onClick={() => setDetail(order)}>
+              <li key={order.id} style={{ animationDelay: `${index * 60}ms` }} className="rise cursor-pointer rounded-xl border border-border bg-background p-4" onClick={() => guardRowClick(order)}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="font-medium">{order.customer_name || 'Pelanggan'}</p>
@@ -389,7 +398,7 @@ export default function BotOrders() {
                     <p className="text-xs text-muted-foreground">{formatDateTime(order.created_at)}</p>
                   </div>
                   <div className="flex items-center gap-1">
-                    <DropdownMenu>
+                    <DropdownMenu onOpenChange={(open) => { if (!open) markOverlayClose() }}>
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="outline"
@@ -401,7 +410,7 @@ export default function BotOrders() {
                           <ChevronDown aria-hidden="true" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
+                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
                         <DropdownMenuLabel>Ubah status</DropdownMenuLabel>
                         <DropdownMenuSeparator />
                         {STATUS_OPTIONS.map((option) => (
