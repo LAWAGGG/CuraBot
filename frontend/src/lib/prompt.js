@@ -41,6 +41,7 @@ export const EMPTY_ANSWERS = {
   name: '',
   mode: '',
   address: '',
+  coords: '',
   link: '',
   field: '',
   style: '',
@@ -58,7 +59,7 @@ function styleSection(answers) {
 }
 
 function serviceSection(answers) {
-  const address = (answers.address || '').trim()
+  const address = (answers.address || '').trim() + (answers.coords ? ` (koordinat: ${answers.coords})` : '')
   const link = (answers.link || '').trim()
   if (answers.mode === 'offline') {
     return {

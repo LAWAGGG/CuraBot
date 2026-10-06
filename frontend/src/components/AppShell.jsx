@@ -1,8 +1,10 @@
-import { Suspense, useState } from 'react'
+import { Suspense, createContext, useContext, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Bot, ChevronDown, LayoutGrid, LogOut, Menu, PlusCircle } from 'lucide-react'
 import CuraBotLogo from '@/components/CuraBotLogo'
+import { apiFetch } from '@/lib/api'
+import { useApi } from '@/hooks/useApi'
 
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -18,6 +20,8 @@ const BOT_TABS = [
   { suffix: 'analitik', label: 'Analitik' },
   { suffix: 'pengaturan', label: 'Pengaturan' },
 ]
+
+export const ChatNavContext = createContext({ selectedChat: null, setSelectedChat: () => {} })
 
 function Brand() {
   return (
@@ -59,10 +63,76 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
   )
 }
 
+function ConversationList({ botId }) {
+  const { selectedChat, setSelectedChat } = useContext(ChatNavContext)
+  const key = `conversations:${botId}:`
+  const { data, loading } = useApi(key, () =>
+    apiFetch(key, { url: `/api/bots/${botId}/conversations`, params: { q: '' } }),
+  )
+  const items = data?.conversations ?? []
+  return (
+    <div className="flex min-h-0 flex-1 flex-col px-4">
+      <button
+        type="button"
+        onClick={() => setSelectedChat(null)}
+        className="mb-2 flex items-center gap-2 px-2 text-sm font-medium text-neutral-500 hover:text-neutral-900"
+      >
+        ← Semua percakapan
+      </button>
+      <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
+        {loading && items.length === 0
+          ? [0, 1, 2, 3].map((i) => (
+              <div key={i} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5">
+                <Skeleton className="size-8 shrink-0 rounded-full" />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Skeleton className="h-4 w-2/3 rounded-md" />
+                  <Skeleton className="h-3 w-full rounded-md" />
+                </div>
+              </div>
+            ))
+          : items.map((item) => {
+          const name = item.customer_name || `User ${String(item.user_id).slice(-6)}`
+          const active = selectedChat?.user_id === item.user_id
+          return (
+            <button
+              key={item.user_id}
+              type="button"
+              onClick={() => setSelectedChat(item)}
+              className={cn(
+                'flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-white/60',
+                active && 'bg-white shadow-sm ring-1 ring-black/[0.04]',
+              )}
+            >
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                {(String(name).trim().charAt(0) || 'U').toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-semibold text-neutral-800">{name}</span>
+                <span className="block truncate text-xs text-neutral-400">{item.last_text}</span>
+              </span>
+              {item.unread_count > 0 ? (
+                <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">
+                  {item.unread_count}
+                </span>
+              ) : null}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function SidebarNav({ onNavigate, pillId = 'side' }) {
   const { pathname } = useLocation()
   const botMatch = pathname.match(/^\/bots\/([^/]+)/)
   const botId = botMatch && botMatch[1] !== 'new' ? botMatch[1] : null
+  const { selectedChat } = useContext(ChatNavContext)
+
+  // ponytail: saat chat detail terbuka, sidebar jadi daftar user biar gampang pindah chat
+  if (botId && selectedChat) {
+    return <ConversationList botId={botId} />
+  }
 
   return (
     <nav className="flex flex-col gap-1 px-4" aria-label="Navigasi utama">
@@ -80,7 +150,6 @@ function SidebarNav({ onNavigate, pillId = 'side' }) {
           <div className="flex min-h-11 items-center gap-3 px-3 text-sm font-semibold text-neutral-900">
             <Bot className="size-5" aria-hidden="true" />
             Bot
-            <ChevronDown className="ml-auto size-4 text-neutral-400" aria-hidden="true" />
           </div>
           <div className="ml-[26px] space-y-0.5 border-l border-neutral-300/80 pl-3">
             {BOT_TABS.map(({ suffix, label, end }) => (
@@ -134,6 +203,7 @@ export default function AppShell() {
   const { email, logout } = useAuth()
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [selectedChat, setSelectedChat] = useState(null)
   const location = useLocation()
 
   const handleLogout = async () => {
@@ -142,6 +212,7 @@ export default function AppShell() {
   }
 
   return (
+    <ChatNavContext.Provider value={{ selectedChat, setSelectedChat }}>
     <div className="min-h-svh bg-[#F4F4F1] lg:flex">
       <aside className="sticky top-0 hidden h-svh w-[280px] shrink-0 flex-col lg:flex">
         <Brand />
@@ -199,5 +270,6 @@ export default function AppShell() {
         </main>
       </div>
     </div>
+    </ChatNavContext.Provider>
   )
 }

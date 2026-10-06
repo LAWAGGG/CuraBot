@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useContext, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { RefreshCw, Share2 } from 'lucide-react'
@@ -12,6 +12,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { formatDate } from '@/lib/utils'
+import { ChatNavContext } from '@/components/AppShell'
 
 const TABS = [
   { to: '.', label: 'Ringkasan', end: true },
@@ -29,7 +30,7 @@ export default function BotLayout() {
   )
 
   const [shareOpen, setShareOpen] = useState(false)
-  const [selectedChat, setSelectedChat] = useState(null)
+  const { selectedChat, setSelectedChat } = useContext(ChatNavContext)
   const location = useLocation()
   const mascotRef = useRef(null)
   const sunglassesRef = useRef(null)

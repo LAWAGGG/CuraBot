@@ -78,6 +78,9 @@ def chat_with_fallback(api_key: str, system_prompt: str, file_context: str,
         "Do NOT invent products, menus, prices, stock, promotions, addresses, or hours that are not explicitly stated. "
         "If the user asks about something not covered (e.g. the menu/products are not listed), reply briefly that the "
         "information is not available yet (e.g. \"Maaf, menu belum tersedia\") instead of guessing or making things up."
+        "\n\nLOCATION RULE: Whenever you mention a physical place, branch, or address (toko, cabang, alamat, lokasi), "
+        "append the marker [[LOC: exact place name and address]] right after it, e.g. \"Lokasi kami di [[LOC: Toko CuraBot, Jl. Merdeka 10, Jakarta]]\". "
+        "Use the exact name/address from the knowledge base, never invent one. The marker is replaced by a Google Maps link automatically."
     )
     for model, label in _model_chain():
         try:
@@ -162,3 +165,71 @@ Output ONLY raw JSON, no markdown."""
                 raise
             continue
     return None
+
+
+PHOTO_ASK_BACK = ("Itu foto apa ya Kak? Kalau ada yang mau ditanyakan soal foto itu "
+                  "(misalnya cari barang serupa, harga, atau stok), tulis pertanyaannya ya!")
+
+
+def analyze_photo(api_key: str, image_bytes: bytes, caption: str, kb_context: str = "") -> tuple:
+    # ponytail: 1 call utk 2 tugas (klasifikasi bukti + jawab) -> hemat token
+    kb = (kb_context or "")[:3000]
+    prompt = f"""Lihat gambar ini.
+1) is_payment_proof: true kalau gambar adalah bukti transfer/pembayaran (screenshot mutasi, struk, konfirmasi bank/e-wallet), selain itu false.
+2) answer: WAJIB isi pertanyaan singkat jika caption adalah pertanyaan/permintaan apapun tentang gambar atau produk (mis. "ada yang seperti ini?", "ini gambar apa?"). Jawab dari knowledge base: sebutkan produk serupa yang ADA di KB, atau katakan belum tersedia bila tidak ada. HANYA null jika caption kosong/bukan pertanyaan.
+Knowledge base toko:
+{kb or "(kosong)"}
+Caption: {caption or "(tanpa caption)"}
+Output HANYA JSON mentah tanpa markdown: {{"is_payment_proof": true/false, "answer": "..." atau null}}"""
+    for model, _label in _model_chain():
+        try:
+            client = _get_client(api_key)
+            resp = client.models.generate_content(
+                model=model,
+                contents=[types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"), prompt],
+                config=types.GenerateContentConfig(temperature=0.2, max_output_tokens=800),
+            )
+            raw = (resp.text or "").strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+            data = json.loads(raw)
+            return bool(data.get("is_payment_proof")), (data.get("answer") or None)
+        except Exception as e:
+            if isinstance(e, APIError) and not _is_rate_limit(e):
+                raise
+            continue
+    return False, None
+
+
+def answer_with_image(api_key: str, system_prompt: str, kb_context: str, history: list,
+                      image_bytes: bytes, user_text: str) -> tuple:
+    # ponytail: riwayat dipotong ke 4 pesan terakhir, max token kecil
+    kb = (kb_context or "")[:3000]
+    sys = (system_prompt or "")[:1500]
+    contents = []
+    for h in history[-4:]:
+        contents.append(types.Content(
+            role="user" if h["role"] == "user" else "model",
+            parts=[types.Part(text=h["text"])],
+        ))
+    kb_note = f"\n\nKnowledge base toko:\n{kb}" if kb else ""
+    for model, label in _model_chain():
+        try:
+            client = _get_client(api_key)
+            chat = client.chats.create(
+                model=model,
+                history=contents or None,
+                config=types.GenerateContentConfig(
+                    system_instruction=sys + kb_note + (
+                        "\n\nJawab pertanyaan user tentang gambar yang ia kirim sebelumnya. "
+                        "Bandingkan dengan knowledge base; jangan mengarang produk di luar itu. Singkat."),
+                    temperature=0.5,
+                    max_output_tokens=800,
+                ),
+            )
+            resp = chat.send_message([types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+                                      user_text or "[foto]"])
+            return (resp.text or "").strip(), label
+        except Exception as e:
+            if isinstance(e, APIError) and not _is_rate_limit(e):
+                raise
+            continue
+    return "Maaf, ada kendala sebentar. Coba kirim ulang ya.", "none"

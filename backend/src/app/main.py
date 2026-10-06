@@ -2,6 +2,7 @@ import hmac
 import json
 import os
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -19,7 +20,7 @@ from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
 
-from . import config, security, schemas, telegram_api, gemini_service, excel_service
+from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service
 from .database import get_db
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
 
@@ -66,6 +67,21 @@ def get_bot_or_404(db: Session, user_id: int, bot_id: int) -> Bot:
     if not bot:
         raise HTTPException(404, "Bot not found")
     return bot
+
+
+def get_chat_mode(db: Session, bot_id: int, chat_id: str) -> str:
+    row = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == str(chat_id)).first()
+    return (row.mode if row else "ai")
+
+
+def set_chat_mode(db: Session, bot_id: int, chat_id: str, mode: str) -> BotChat | None:
+    row = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == str(chat_id)).first()
+    if not row:
+        return None
+    row.mode = mode
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 def public_bot(bot: Bot) -> dict:
@@ -390,6 +406,7 @@ def conversation_item(db: Session, bot_id: int, user_id_value: str) -> dict | No
             incoming, Message.message_text != "[admin]").scalar() or 0)
     last = split_bubbles(r, bot_id)
     last_b = last[-1] if last else {"sender": "user", "text": r.message_text}
+    binding = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == r.chat_id).first()
     return {
         "user_id": r.user_id,
         "customer_name": order.customer_name if order else None,
@@ -397,6 +414,7 @@ def conversation_item(db: Session, bot_id: int, user_id_value: str) -> dict | No
         "last_sender": last_b.get("sender") or "user",
         "last_created_at": str(r.created_at),
         "unread_count": unread,
+        "mode": binding.mode if binding else "ai",
     }
 
 
@@ -511,7 +529,10 @@ def get_thread(bot_id: int, customer_id: str, before_id: int = Query(0, ge=0),
     bubbles = []
     for r in reversed(rows):
         bubbles.extend(split_bubbles(r, bot_id))
-    return {"bubbles": bubbles, "has_more": has_more}
+    latest_msg = db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id).order_by(desc(Message.created_at), desc(Message.id)).first()
+    binding = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == (latest_msg.chat_id if latest_msg else "")).first() if latest_msg else None
+    mode = binding.mode if binding else "ai"
+    return {"bubbles": bubbles, "has_more": has_more, "mode": mode}
 
 
 @app.post("/api/bots/{bot_id}/conversations/{customer_id}/reply")
@@ -533,6 +554,12 @@ def reply_thread(bot_id: int, customer_id: str, body: schemas.ReplyIn,
                   sender="admin", message_text="[admin]", response_text=body.text.strip())
     db.add(msg)
     db.commit()
+    binding = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == latest.chat_id).first()
+    if binding:
+        binding.mode = "manual"
+    else:
+        db.add(BotChat(bot_id=bot_id, chat_id=latest.chat_id, mode="manual"))
+    db.commit()
     emit_conversation(db, bot_id, customer_id, msg)
     return {"ok": True}
 
@@ -553,6 +580,21 @@ def mark_read(bot_id: int, customer_id: str,
     db.commit()
     emit_conversation(db, bot_id, customer_id)
     return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/conversations/{customer_id}/mode")
+def set_mode(bot_id: int, customer_id: str, body: schemas.ModeIn,
+             user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    latest = (db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id)
+              .order_by(desc(Message.created_at), desc(Message.id)).first())
+    if not latest:
+        raise HTTPException(404, "Customer chat not found")
+    row = set_chat_mode(db, bot_id, latest.chat_id, body.mode)
+    if not row:
+        raise HTTPException(404, "Customer chat not found")
+    emit_conversation(db, bot_id, customer_id, None)
+    return {"ok": True, "mode": row.mode}
 
 
 # ---------- ORDERS ----------
@@ -735,6 +777,27 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         if binding:
             bot = db.query(Bot).filter(Bot.id == binding.bot_id, Bot.status == "active").first()
             if bot:
+                if (binding.mode or "ai") == "manual":
+                    try:
+                        fid = photos[-1]["file_id"]
+                        info = telegram_api.get_file(config.TELEGRAM_TOKEN, fid)
+                        data = telegram_api.download_file(config.TELEGRAM_TOKEN, info["file_path"])
+                        dest_dir = os.path.join(config.UPLOAD_DIR, str(bot.id))
+                        os.makedirs(dest_dir, exist_ok=True)
+                        dest = os.path.join(dest_dir, f"proof_{int(time.time())}.jpg")
+                        with open(dest, "wb") as f:
+                            f.write(data)
+                        photo_msg = Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
+                                           sender="user", media_path=dest,
+                                           message_text=caption or "[foto]", response_text="")
+                        db.add(photo_msg)
+                        db.commit()
+                        db.refresh(photo_msg)
+                        emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                    except Exception:
+                        telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
+                                                  "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
+                    return {"ok": True}
                 try:
                     fid = photos[-1]["file_id"]
                     info = telegram_api.get_file(config.TELEGRAM_TOKEN, fid)
@@ -752,16 +815,60 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                     db.commit()
                     db.refresh(photo_msg)
                     emit_conversation(db, bot.id, str(chat_id), photo_msg)
-                    latest = (db.query(ExtractedOrder)
-                              .join(Message, Message.id == ExtractedOrder.message_id)
-                              .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
-                                      ExtractedOrder.status.in_(["pending", "incomplete"]))
-                              .order_by(desc(ExtractedOrder.created_at)).first())
-                    if latest:
-                        latest.payment_proof_path = dest
-                        db.commit()
-                    telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
-                                              "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
+                    api_key = security.decrypt(bot.api_key_encrypted)
+                    files = (db.query(UploadedFile)
+                             .filter(UploadedFile.bot_id == bot.id, UploadedFile.extracted_text != "").all())
+                    kb = "\n\n".join((f.extracted_text or "")[:1500] for f in files)
+                    try:
+                        is_proof, answer = gemini_service.analyze_photo(api_key, data, caption, kb)
+                    except Exception:
+                        is_proof, answer = True, None  # ponytail: gagal cek -> jangan blokir pelanggan, anggap bukti
+                    if not is_proof:
+                        if answer:
+                            try:
+                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, answer)
+                            except Exception:
+                                pass
+                            photo_msg.response_text = answer
+                            db.commit()
+                            emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                            return {"ok": True}
+                        if caption:
+                            # ponytail: caption ada tapi analyze_photo tak menjawab -> kirim ke vision lagi dengan gambar
+                            try:
+                                files2 = files
+                                reply2, _m = gemini_service.answer_with_image(
+                                    api_key, bot.system_prompt or "", kb, [], data, caption)
+                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                                photo_msg.response_text = reply2
+                                db.commit()
+                                emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                                return {"ok": True}
+                            except Exception:
+                                text = caption  # fallback terakhir: alur teks
+                        else:
+                            try:
+                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, gemini_service.PHOTO_ASK_BACK)
+                            except Exception:
+                                pass
+                            photo_msg.response_text = gemini_service.PHOTO_ASK_BACK
+                            db.commit()
+                            emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                            return {"ok": True}
+                    else:
+                        latest = (db.query(ExtractedOrder)
+                                  .join(Message, Message.id == ExtractedOrder.message_id)
+                                  .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                          ExtractedOrder.status.in_(["pending", "incomplete"]))
+                                  .order_by(desc(ExtractedOrder.created_at)).first())
+                        if latest:
+                            latest.payment_proof_path = dest
+                            db.commit()
+                        telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
+                                                  "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
+                        if not caption:
+                            return {"ok": True}
+                        text = caption
                 except Exception:
                     telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                               "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
@@ -814,7 +921,29 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     if not bot:
         return {"ok": True}
     bot_id = bot.id
+    if (binding.mode or "ai") == "manual":
+        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                      sender="user", message_text=text, response_text="")
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        emit_conversation(db, bot_id, uid, msg)
+        return {"ok": True}
     api_key = security.decrypt(bot.api_key_encrypted)
+
+    # foto sebelumnya ditanya balik? -> jawaban teks user ini merujuk ke foto itu
+    pending_photo = (db.query(Message)
+                     .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                             Message.media_path.isnot(None),
+                             Message.response_text == gemini_service.PHOTO_ASK_BACK)
+                     .order_by(desc(Message.id)).first())
+    if pending_photo:
+        answered = (db.query(Message)
+                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                            Message.id > pending_photo.id, Message.media_path.is_(None))
+                    .first())
+        if answered:
+            pending_photo = None
 
     history_rows = (db.query(Message)
                     .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id))
@@ -907,7 +1036,18 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     start = time.time()
     try:
-        reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
+        if pending_photo:
+            try:
+                with open(config.resolve_upload_path(pending_photo.media_path), "rb") as f:
+                    img_bytes = f.read()
+                reply, model_used = gemini_service.answer_with_image(
+                    api_key, system_prompt, file_context, history, img_bytes, text)
+            except Exception:
+                reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
+        else:
+            reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
+        m_coords = re.search(r"\(koordinat:\s*([^)]+)\)", bot.system_prompt or "")
+        reply = location_service.enrich_with_maps(reply, m_coords.group(1).strip() if m_coords else None)
     except Exception:
         reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
     response_time = round(time.time() - start, 2)

@@ -41,3 +41,7 @@ class OrderStatusIn(BaseModel):
 
 class ReplyIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+
+
+class ModeIn(BaseModel):
+    mode: str = Field(pattern="^(ai|manual)$")

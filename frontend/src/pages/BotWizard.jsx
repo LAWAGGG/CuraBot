@@ -314,7 +314,7 @@ export default function BotWizard() {
                   {fieldError('address')}
                   <AddressPicker
                     value={answers.address}
-                    onChange={(address) => handleAnswer({ address })}
+                    onChange={(address, coords) => handleAnswer({ address, coords })}
                   />
                 </div>
               ) : null}

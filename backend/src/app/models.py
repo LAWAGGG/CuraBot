@@ -94,7 +94,8 @@ class BotChat(Base):
     __tablename__ = "bot_chats"
     id = Column(Integer, primary_key=True, autoincrement=True)
     bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
-    chat_id = Column(String(50), nullable=False, index=True)
+    chat_id = Column(String(50), nullable=False, unique=True, index=True)
+    mode = Column(Enum("ai", "manual"), default="ai", nullable=False, server_default="ai")
     created_at = Column(DateTime, server_default=func.now())
 
 

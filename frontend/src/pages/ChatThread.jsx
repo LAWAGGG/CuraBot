@@ -3,6 +3,7 @@ import { ArrowLeft, Loader2, SendHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { api, apiFetch, errorMessage, invalidate } from '@/lib/api'
 import { useBotEvents } from '@/hooks/useBotEvents'
@@ -32,6 +33,7 @@ function mergeThreadBubbles(prev, incoming) {
 
 export default function ChatThread({ bot, user, onBack }) {
   const [bubbles, setBubbles] = useState([])
+  const [loaded, setLoaded] = useState(false)
   const [hasMore, setHasMore] = useState(false)
   const [loadingTop, setLoadingTop] = useState(false)
   const [text, setText] = useState('')
@@ -39,6 +41,7 @@ export default function ChatThread({ bot, user, onBack }) {
   const [preview, setPreview] = useState(null)
   const [failedMedia, setFailedMedia] = useState(() => new Set())
   const [mediaUrls, setMediaUrls] = useState({})
+  const [mode, setMode] = useState('ai')
   const boxRef = useRef(null)
   const mountedRef = useRef(true)
   const generationRef = useRef(0)
@@ -62,6 +65,8 @@ export default function ChatThread({ bot, user, onBack }) {
     setFailedMedia(new Set())
     setSending(false)
     setText('')
+    setLoaded(false)
+    setBubbles([])
     setMediaUrls((previous) => {
       Object.values(previous).forEach((url) => URL.revokeObjectURL(url))
       return {}
@@ -73,10 +78,12 @@ export default function ChatThread({ bot, user, onBack }) {
     }).then((d) => {
       if (!isCurrent(generation)) return
       setBubbles(d.bubbles ?? [])
+      setMode(d.mode ?? 'ai')
       setHasMore(d.has_more)
+      setLoaded(true)
       scrollBottom(generation)
     }).catch((e) => {
-      if (isCurrent(generation)) toast.error(errorMessage(e))
+      if (isCurrent(generation)) { toast.error(errorMessage(e)); setLoaded(true) }
     })
     return () => { mountedRef.current = false }
   }, [bot.id, threadKey, uid])
@@ -85,6 +92,7 @@ export default function ChatThread({ bot, user, onBack }) {
     if (event.type !== 'conversation_updated') return
     const item = event.data?.item
     if (item?.user_id !== user.user_id) return
+    if (item.mode) setMode(item.mode)
     const incoming = event.data?.bubbles
     if (!Array.isArray(incoming) || incoming.length === 0) return
     setBubbles((previous) => mergeThreadBubbles(previous, incoming))
@@ -150,6 +158,31 @@ export default function ChatThread({ bot, user, onBack }) {
     if (boxRef.current && boxRef.current.scrollTop < 80) loadOlder()
   }
 
+  const resetToAi = async () => {
+    try {
+      await api.post(`/api/bots/${bot.id}/conversations/${uid}/mode`, { mode: 'ai' })
+      setMode('ai')
+      invalidate(threadKey)
+      toast.success('Mode dikembalikan ke AI')
+    } catch (e) {
+      toast.error(errorMessage(e))
+    }
+  }
+
+  const leaveThread = async () => {
+    if (mode !== 'manual') {
+      onBack()
+      return
+    }
+    try {
+      await api.post(`/api/bots/${bot.id}/conversations/${uid}/mode`, { mode: 'ai' })
+    } catch (e) {
+      toast.error(errorMessage(e))
+    } finally {
+      onBack()
+    }
+  }
+
   const send = async () => {
     const generation = generationRef.current
     const msg = text.trim()
@@ -164,6 +197,7 @@ export default function ChatThread({ bot, user, onBack }) {
       if (!isCurrent(generation)) return
       invalidate(`conversations:${bot.id}`)
       invalidate(threadKey)
+      setMode('manual')
     } catch (e) {
       if (!isCurrent(generation)) return
       setBubbles((p) => p.filter((b) => b.id !== optimistic.id))
@@ -179,13 +213,18 @@ export default function ChatThread({ bot, user, onBack }) {
   return (
     <div className="flex h-[90vh] flex-col rounded-xl border border-border bg-background">
       <div className="flex items-center gap-2 border-b border-border p-3">
-        <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="Kembali">
+        <Button variant="ghost" size="icon-sm" onClick={leaveThread} aria-label="Kembali">
           <ArrowLeft aria-hidden="true" />
         </Button>
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{name}</p>
           <p className="truncate text-xs text-muted-foreground">ID: {String(user.user_id)}</p>
         </div>
+        {mode === 'manual' ? (
+          <Button variant="outline" size="sm" onClick={resetToAi} className="ml-auto shrink-0">
+            Kembali ke mode AI
+          </Button>
+        ) : null}
       </div>
 
       <div ref={boxRef} onScroll={handleScroll} className="flex-1 space-y-3 overflow-y-auto bg-muted/40 p-4">
@@ -194,7 +233,15 @@ export default function ChatThread({ bot, user, onBack }) {
             <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden="true" />
           </div>
         ) : null}
-        {bubbles.length === 0 ? (
+        {!loaded && bubbles.length === 0 ? (
+          <div className="space-y-3" aria-busy="true" aria-label="Memuat pesan">
+            <Skeleton className="ml-auto h-14 w-2/3 rounded-2xl" />
+            <Skeleton className="h-20 w-3/4 rounded-2xl" />
+            <Skeleton className="ml-auto h-10 w-1/2 rounded-2xl" />
+            <Skeleton className="h-14 w-2/3 rounded-2xl" />
+            <Skeleton className="ml-auto h-24 w-3/4 rounded-2xl" />
+          </div>
+        ) : bubbles.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">Belum ada pesan.</p>
         ) : (
           bubbles.map((b) => {
