@@ -14,6 +14,14 @@ METHOD_LABELS = {
     "cash": "Cash / Tunai",
 }
 
+PAYMENT_KEYWORDS = ("bayar", "pembayaran", "payment", "qris", "transfer",
+                    "rekening", "cash", "tunai", "cod")
+
+
+def mentions_payment(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(kw in lowered for kw in PAYMENT_KEYWORDS)
+
 
 def available_methods(bot) -> list:
     methods = []

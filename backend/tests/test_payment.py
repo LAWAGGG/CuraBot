@@ -74,6 +74,19 @@ class StageTest(unittest.TestCase):
         assert payment.order_data_complete(fake_order(delivery_address="Onsite")) is True
 
 
+class MentionsPaymentTest(unittest.TestCase):
+    def test_keywords(self):
+        assert payment.mentions_payment("jadi kalau mau bayar ada apa saja?") is True
+        assert payment.mentions_payment("Minta no rekening dong") is True
+        assert payment.mentions_payment("bisa COD?") is True
+        assert payment.mentions_payment("ada QRIS?") is True
+
+    def test_non_payment(self):
+        assert payment.mentions_payment("pesan 2 kue coklat ya") is False
+        assert payment.mentions_payment("") is False
+        assert payment.mentions_payment(None) is False
+
+
 class ReminderTextTest(unittest.TestCase):
     def test_contains_total_and_proof_ask(self):
         text = payment.reminder_text(fake_bot("BCA 123"), fake_order())

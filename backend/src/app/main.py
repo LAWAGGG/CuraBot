@@ -1129,11 +1129,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         "5. Ditanya QRIS: TERSEDIA -> katakan QRIS tersedia dan gambarnya menyusul tepat setelah pesan ini; "
         "TIDAK TERSEDIA -> katakan QRIS belum tersedia, tawarkan payment_info bila ada, bila kosong katakan tunggu info penjual. "
         "6. Setiap customer bertanya soal pembayaran/cara bayar (umum, bukan spesifik satu metode): "
-        "bila blok TAHAP PEMBAYARAN aktif, JANGAN uraikan semua metode — arahkan customer menekan tombol metode pembayaran yang tampil. "
-        "Di luar tahap pembayaran, sodorkan LANGSUNG semua metode yang ada tanpa menunggu diminta satu per satu. "
-        "Keduanya ada -> tampilkan daftar: 1) nomor rekening (kutip persis payment_info) 2) QRIS (katakan gambarnya menyusul). "
-        "Hanya satu yang ada -> tampilkan yang ada itu langsung dan lengkap. "
-        "Keduanya kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
+        "sistem otomatis menampilkan tombol metode pembayaran di bawah pesanmu — jawab SINGKAT saja "
+        "(contoh: 'Gampang, Kak! Silakan pilih metode pembayaran lewat tombol di bawah ya'), "
+        "JANGAN uraikan daftar/detail tiap metode dalam teks kecuali customer meminta eksplisit. "
+        "Bila semua metode kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
         "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada. "
         "7. Ditanya bayar tunai/cash/COD: TERSEDIA -> katakan bisa bayar tunai saat pesanan diterima; "
         "TIDAK TERSEDIA -> jangan tawarkan tunai, arahkan ke metode yang ada. "
@@ -1172,8 +1171,11 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     response_time = round(time.time() - start, 2)
 
     clean_reply, wanted = image_markers.parse_image_markers(reply)
-    pay_kb = (payment.payment_keyboard(bot)
-              if payment.payment_stage_active(bot, latest_order) else None)
+    # tombol metode: selama tahap pembayaran, atau kapan pun customer menyinggung topik bayar
+    show_pay = (payment.available_methods(bot)
+                and (payment.payment_stage_active(bot, latest_order)
+                     or payment.mentions_payment(text)))
+    pay_kb = payment.payment_keyboard(bot) if show_pay else None
     try:
         telegram_api.send_message(token, chat_id,
                                   clean_reply if clean_reply else "Berikut gambarnya ya.",
