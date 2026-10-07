@@ -60,11 +60,15 @@ def download_file(token: str, file_path: str) -> bytes:
     return r.content
 
 
-def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
+def send_photo(token: str, chat_id, photo_path: str, caption: str = "",
+               reply_markup: dict | None = None):
     ext, data = _photo_bytes(photo_path)
+    form = {"chat_id": chat_id, "caption": caption[:1000]}
+    if reply_markup:
+        form["reply_markup"] = json.dumps(reply_markup)
     r = requests.post(
         f"{BASE}/bot{token}/sendPhoto",
-        data={"chat_id": chat_id, "caption": caption[:1000]},
+        data=form,
         files={"photo": (f"photo.{ext}", data)},
         timeout=30,
     )
@@ -95,9 +99,15 @@ def send_media_group(token: str, chat_id, photo_paths: list, caption: str = ""):
     return data["result"]
 
 
-def send_message(token: str, chat_id, text: str):
+def send_message(token: str, chat_id, text: str, reply_markup: dict | None = None):
     md = text.replace("**", "*")
+    extra = {"reply_markup": reply_markup} if reply_markup else {}
     try:
-        return _call(token, "sendMessage", chat_id=chat_id, text=md[:4000], parse_mode="Markdown")
+        return _call(token, "sendMessage", chat_id=chat_id, text=md[:4000],
+                     parse_mode="Markdown", **extra)
     except ValueError:
-        return _call(token, "sendMessage", chat_id=chat_id, text=text[:4000])
+        return _call(token, "sendMessage", chat_id=chat_id, text=text[:4000], **extra)
+
+
+def answer_callback_query(token: str, callback_query_id):
+    return _call(token, "answerCallbackQuery", callback_query_id=callback_query_id)
