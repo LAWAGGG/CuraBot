@@ -1,3 +1,5 @@
+import json
+
 import requests
 
 BASE = "https://api.telegram.org"
@@ -56,17 +58,15 @@ def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
 def send_media_group(token: str, chat_id, photo_paths: list, caption: str = ""):
     media = []
     files = {}
-    handles = []
-    for i, p in enumerate(photo_paths[:10]):
-        name = f"file{i}"
-        files[name] = open(p, "rb")
-        media.append({"type": "photo", "media": f"attach://{name}",
-                      **({"caption": caption[:1000]} if i == 0 and caption else {})})
     try:
-        import json as _json
+        for i, p in enumerate(photo_paths[:10]):
+            name = f"file{i}"
+            files[name] = open(p, "rb")
+            media.append({"type": "photo", "media": f"attach://{name}",
+                          **({"caption": caption[:1000]} if i == 0 and caption else {})})
         r = requests.post(
             f"{BASE}/bot{token}/sendMediaGroup",
-            data={"chat_id": chat_id, "media": _json.dumps(media)},
+            data={"chat_id": chat_id, "media": json.dumps(media)},
             files=files,
             timeout=60,
         )
