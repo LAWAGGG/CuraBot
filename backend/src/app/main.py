@@ -22,7 +22,7 @@ from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
 
-from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers
+from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers, payment
 from .database import get_db, SessionLocal
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
 
@@ -794,6 +794,37 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         if not hmac.compare_digest(provided, config.TELEGRAM_WEBHOOK_SECRET):
             raise HTTPException(403, "Invalid webhook secret")
     payload = await request.json()
+    # tap pada tombol metode pembayaran -> jawab deterministik tanpa AI
+    cb = payload.get("callback_query") or {}
+    cb_data = cb.get("data") or ""
+    if cb_data.startswith("pay:"):
+        cb_chat_id = cb.get("message", {}).get("chat", {}).get("id")
+        try:
+            telegram_api.answer_callback_query(config.TELEGRAM_TOKEN, cb.get("id"))
+        except Exception:
+            pass
+        binding = db.query(BotChat).filter(BotChat.chat_id == str(cb_chat_id)).first()
+        bot = (db.query(Bot).filter(Bot.id == binding.bot_id, Bot.status == "active").first()
+               if binding else None)
+        if bot:
+            kind, text = payment.callback_response(bot, cb_data)
+            try:
+                if kind == "qris":
+                    telegram_api.send_photo(config.TELEGRAM_TOKEN, cb_chat_id,
+                                            config.resolve_upload_path(bot.qris_image_path),
+                                            caption="QRIS pembayaran")
+                telegram_api.send_message(config.TELEGRAM_TOKEN, cb_chat_id, text)
+                msg = Message(bot_id=bot.id, user_id=str(cb_chat_id), chat_id=str(cb_chat_id),
+                              sender="user",
+                              message_text=f"[memilih metode pembayaran: {cb_data.removeprefix('pay:')}]",
+                              response_text=text)
+                db.add(msg)
+                db.commit()
+                db.refresh(msg)
+                emit_conversation(db, bot.id, str(cb_chat_id), msg)
+            except Exception:
+                pass
+        return {"ok": True}
     message = payload.get("message") or {}
     chat_id = message.get("chat", {}).get("id")
     # customer share contact -> isi otomatis customer_phone di order aktif/terakhir
@@ -1064,17 +1095,14 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum menyatakan pesanan sudah dicatat/diubah, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
                       "Baru setelah customer mengiyakan, katakan pesanan sudah tercatat/terupdate. "
                       "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi.")
-    addr_ok = bool((latest_order.delivery_address or "").strip()) if latest_order else False
-    data_complete = bool(
-        latest_order and latest_order.customer_name and latest_order.customer_phone
-        and (latest_order.products or []) and latest_order.total_price is not None and addr_ok
-    )
+    data_complete = payment.order_data_complete(latest_order)
     if bot.payment_info and data_complete and latest_order.status in ("pending", "incomplete"):
         total_str = f"Rp{float(latest_order.total_price):,.0f}".replace(",", ".")
         system_prompt += ("\n\nTAHAP PEMBAYARAN: Data pesanan customer sudah lengkap. "
                           "Tegaskan dan ingatkan customer agar segera membayar sekarang. "
                           f"Total yang harus dibayar: {total_str}. "
-                          "Sampaikan instruksi berikut persis dari penjual: " + bot.payment_info)
+                          "Sampaikan instruksi berikut persis dari penjual: " + bot.payment_info +
+                          " Customer juga melihat tombol pilihan metode pembayaran; ajak customer menekan salah satu tombol itu.")
         if not latest_order.payment_proof_path:
             system_prompt += ("\n\nPENGINGAT BUKTI BAYAR: Customer belum mengirim bukti pembayaran. "
                               "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
@@ -1084,9 +1112,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     has_qris = bool(bot.qris_image_path)
     pay_state = f"ada: {bot.payment_info.strip()}" if has_payment_info else "KOSONG (penjual belum mengisi info pembayaran)"
     qris_state = "TERSEDIA (gambar QRIS penjual sudah diupload)" if has_qris else "TIDAK TERSEDIA (penjual belum upload gambar QRIS)"
+    cash_state = "TERSEDIA" if bot.cash_enabled else "TIDAK TERSEDIA"
     system_prompt += (
         "\n\nINFO PEMBAYARAN (ground truth, prioritas tertinggi untuk topik bayar): "
-        f"payment_info={pay_state}; qris_image={qris_state}."
+        f"payment_info={pay_state}; qris_image={qris_state}; cash={cash_state}."
         "\nATURAN PEMBAYARAN (wajib, kalahkan instruksi lain): "
         "1. Jawab bayar/transfer/rekening/nomor rekening/QRIS HANYA dari info di atas. "
         "2. DILARANG mengarang nomor rekening/bank/VA/QRIS. "
@@ -1100,7 +1129,9 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         "Keduanya ada -> tampilkan daftar: 1) nomor rekening (kutip persis payment_info) 2) QRIS (katakan gambarnya menyusul). "
         "Hanya satu yang ada -> tampilkan yang ada itu langsung dan lengkap. "
         "Keduanya kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
-        "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada."
+        "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada. "
+        "7. Ditanya bayar tunai/cash/COD: TERSEDIA -> katakan bisa bayar tunai saat pesanan diterima; "
+        "TIDAK TERSEDIA -> jangan tawarkan tunai, arahkan ke metode yang ada. "
     )
 
     image_rows = (db.query(UploadedFile)
@@ -1136,8 +1167,12 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     response_time = round(time.time() - start, 2)
 
     clean_reply, wanted = image_markers.parse_image_markers(reply)
+    pay_kb = (payment.payment_keyboard(bot)
+              if payment.payment_stage_active(bot, latest_order) else None)
     try:
-        telegram_api.send_message(token, chat_id, clean_reply if clean_reply else "Berikut gambarnya ya.")
+        telegram_api.send_message(token, chat_id,
+                                  clean_reply if clean_reply else "Berikut gambarnya ya.",
+                                  reply_markup=pay_kb)
     except Exception:
         pass
 
@@ -1213,6 +1248,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     db.refresh(msg)
 
     # ponytail: hanya simpan/update order setelah customer mengonfirmasi ringkasan dari AI
+    saved_order = None
     if order and existing and order.get("customer_confirmed"):
         # 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
         new_products = order.get("products") or existing.products
@@ -1234,17 +1270,30 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             existing.customer_name = order.get("customer_name")
         # ponytail: status TIDAK diubah dari sisi chat — hanya creator yang boleh mengubah status order
         db.commit()
+        saved_order = existing
     elif order and order.get("customer_confirmed"):
         status = "pending" if order.get("total_price") is not None else "incomplete"
-        db.add(ExtractedOrder(
+        new_order = ExtractedOrder(
             bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
             customer_name=order.get("customer_name") or customer_name,
             products=order["products"], total_price=order.get("total_price"),
             delivery_address=order.get("delivery_address"), customer_phone=order.get("customer_phone"),
-        ))
+        )
+        db.add(new_order)
         db.commit()
+        db.refresh(new_order)
+        saved_order = new_order
         try:
             excel_service.append_order(bot_id, order, uid, status)
+        except Exception:
+            pass
+
+    # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
+    if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):
+        try:
+            telegram_api.send_message(token, chat_id,
+                                      payment.reminder_text(bot, saved_order),
+                                      reply_markup=payment.payment_keyboard(bot))
         except Exception:
             pass
 
