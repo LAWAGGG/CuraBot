@@ -46,9 +46,12 @@ def payment_stage_active(bot, order) -> bool:
                 and not order.payment_proof_path)
 
 
+REMINDER_PREFIX = "Data pesananmu sudah lengkap"
+
+
 def reminder_text(bot, order) -> str:
     total_str = f"Rp{float(order.total_price):,.0f}".replace(",", ".")
-    return (f"Data pesananmu sudah lengkap, Kak. Total pembayaran: *{total_str}*.\n"
+    return (f"{REMINDER_PREFIX}, Kak. Total pembayaran: *{total_str}*.\n"
             "Silakan pilih metode pembayaran di bawah ini. " + PROOF_ASK)
 
 

@@ -80,6 +80,11 @@ class ReminderTextTest(unittest.TestCase):
         assert "Rp10.000" in text
         assert "bukti pembayaran" in text
 
+    def test_starts_with_prefix(self):
+        # webhook dedupes reminder via prefix LIKE query — jangan ubah tanpa mengubah dedupe
+        assert payment.reminder_text(fake_bot("BCA 123"), fake_order()).startswith(
+            payment.REMINDER_PREFIX)
+
 
 class CallbackResponseTest(unittest.TestCase):
     def test_rekening_quotes_verbatim(self):

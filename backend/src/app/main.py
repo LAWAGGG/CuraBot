@@ -6,6 +6,7 @@ import queue
 import re
 import threading
 import time
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -311,6 +312,7 @@ def list_files(bot_id: int, user_id: int = Depends(security.get_current_user),
     return {"files": [{
         "id": r.id, "bot_id": r.bot_id, "filename": r.filename, "file_type": r.file_type,
         "file_size": r.file_size, "created_at": str(r.created_at), "label": r.label,
+        "media_url": config.upload_url(r.bot_id, r.file_path),
     } for r in rows]}
 
 
@@ -1101,8 +1103,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         system_prompt += ("\n\nTAHAP PEMBAYARAN: Data pesanan customer sudah lengkap. "
                           "Tegaskan dan ingatkan customer agar segera membayar sekarang. "
                           f"Total yang harus dibayar: {total_str}. "
-                          "Sampaikan instruksi berikut persis dari penjual: " + bot.payment_info +
-                          " Customer juga melihat tombol pilihan metode pembayaran; ajak customer menekan salah satu tombol itu.")
+                          "Customer melihat tombol pilihan metode pembayaran di bawah pesan. "
+                          "JANGAN uraikan detail tiap metode (nomor rekening, QRIS, cash) dalam teks — "
+                          "cukup sebutkan total, minta customer menekan salah satu tombol, dan ingatkan kirim bukti bayar. "
+                          "Detail tiap metode hanya dijawab bila customer bertanya eksplisit via teks, dari: " + bot.payment_info)
         if not latest_order.payment_proof_path:
             system_prompt += ("\n\nPENGINGAT BUKTI BAYAR: Customer belum mengirim bukti pembayaran. "
                               "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
@@ -1125,7 +1129,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         "5. Ditanya QRIS: TERSEDIA -> katakan QRIS tersedia dan gambarnya menyusul tepat setelah pesan ini; "
         "TIDAK TERSEDIA -> katakan QRIS belum tersedia, tawarkan payment_info bila ada, bila kosong katakan tunggu info penjual. "
         "6. Setiap customer bertanya soal pembayaran/cara bayar (umum, bukan spesifik satu metode): "
-        "sodorkan LANGSUNG semua metode yang ada tanpa menunggu diminta satu per satu. "
+        "bila blok TAHAP PEMBAYARAN aktif, JANGAN uraikan semua metode — arahkan customer menekan tombol metode pembayaran yang tampil. "
+        "Di luar tahap pembayaran, sodorkan LANGSUNG semua metode yang ada tanpa menunggu diminta satu per satu. "
         "Keduanya ada -> tampilkan daftar: 1) nomor rekening (kutip persis payment_info) 2) QRIS (katakan gambarnya menyusul). "
         "Hanya satu yang ada -> tampilkan yang ada itu langsung dan lengkap. "
         "Keduanya kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
@@ -1291,11 +1296,38 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
     if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):
         try:
-            telegram_api.send_message(token, chat_id,
-                                      payment.reminder_text(bot, saved_order),
+            text_r = payment.reminder_text(bot, saved_order)
+            telegram_api.send_message(token, chat_id, text_r,
                                       reply_markup=payment.payment_keyboard(bot))
+            db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                           message_text="[pengingat pembayaran otomatis]", response_text=text_r))
+            db.commit()
         except Exception:
             pass
+    elif not saved_order and existing and not data_complete and order:
+        # order belum terkonfirmasi, tapi ekstraksi turn ini menunjukkan data sudah lengkap
+        merged = SimpleNamespace(
+            customer_name=order.get("customer_name") or existing.customer_name,
+            customer_phone=order.get("customer_phone") or existing.customer_phone,
+            products=order.get("products") or existing.products,
+            total_price=order.get("total_price") if order.get("total_price") is not None else existing.total_price,
+            delivery_address=order.get("delivery_address") or existing.delivery_address,
+            status=existing.status, payment_proof_path=existing.payment_proof_path)
+        if payment.payment_stage_active(bot, merged):
+            reminded = (db.query(Message)
+                        .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                                Message.response_text.like(payment.REMINDER_PREFIX + "%"))
+                        .first())
+            if not reminded:
+                try:
+                    text_r = payment.reminder_text(bot, merged)
+                    telegram_api.send_message(token, chat_id, text_r,
+                                              reply_markup=payment.payment_keyboard(bot))
+                    db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                                   message_text="[pengingat pembayaran otomatis]", response_text=text_r))
+                    db.commit()
+                except Exception:
+                    pass
 
     emit_conversation(db, bot_id, uid, msg)
     return {"ok": True}
