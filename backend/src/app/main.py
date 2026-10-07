@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import os
@@ -9,19 +10,20 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, or_
+from sqlalchemy.exc import IntegrityError
 from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
 
 from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers
-from .database import get_db
+from .database import get_db, SessionLocal
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
 
 app = FastAPI(title="CuraBot API")
@@ -393,7 +395,7 @@ class BotEventBroker:
                 self._subscribers.pop(bot_id, None)
 
     def publish(self, bot_id: int, event: str, data: dict):
-        payload = f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+        payload = json.dumps({"type": event, "data": data}, default=str)
         with self._lock:
             subs = list(self._subscribers.get(bot_id, ()))
         for q in subs:
@@ -454,28 +456,32 @@ def emit_conversation(db: Session, bot_id: int, user_id_value: str, msg: Message
     broker.publish(bot_id, "conversation_updated", data)
 
 
-@app.get("/api/bots/{bot_id}/events")
-def bot_events(bot_id: int, user_id: int = Depends(security.get_current_user),
-               db: Session = Depends(get_db)):
-    get_bot_or_404(db, user_id, bot_id)
+@app.websocket("/api/bots/{bot_id}/ws")
+async def bot_events_ws(websocket: WebSocket, bot_id: int, token: str = Query("")):
+    # ponytail: token via query karena WebSocket browser tak bisa set header Authorization
+    try:
+        user_id = security.decode_token(token)
+    except HTTPException:
+        await websocket.close(code=4401)
+        return
+    db = SessionLocal()
+    try:
+        bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user_id, Bot.status == "active").first()
+    finally:
+        db.close()
+    if not bot:
+        await websocket.close(code=4404)
+        return
     q = broker.subscribe(bot_id)
-
-    def stream():
-        try:
-            yield ": connected\n\n"
-            while True:
-                try:
-                    yield q.get(timeout=25)
-                except queue.Empty:
-                    yield ": hb\n\n"
-        finally:
-            broker.unsubscribe(bot_id, q)
-
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    await websocket.accept()
+    try:
+        while True:
+            payload = await asyncio.to_thread(q.get)
+            await websocket.send_text(payload)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        broker.unsubscribe(bot_id, q)
 
 
 @app.get("/api/bots/{bot_id}/conversations")
@@ -602,6 +608,12 @@ def mark_read(bot_id: int, customer_id: str,
     if not row:
         row = ConversationRead(bot_id=bot_id, user_id=customer_id)
         db.add(row)
+        try:
+            db.flush()
+        except IntegrityError:  # request paralel sudah insert duluan
+            db.rollback()
+            row = (db.query(ConversationRead).filter(ConversationRead.bot_id == bot_id,
+                    ConversationRead.user_id == customer_id).first())
     row.last_read_at = db.query(func.now()).scalar()
     db.commit()
     emit_conversation(db, bot_id, customer_id)
