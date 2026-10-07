@@ -20,7 +20,7 @@ from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
 
-from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service
+from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers
 from .database import get_db
 from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
 
@@ -1087,6 +1087,20 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada."
     )
 
+    image_rows = (db.query(UploadedFile)
+                  .filter(UploadedFile.bot_id == bot.id, UploadedFile.file_type.in_(config.IMAGE_EXTS))
+                  .order_by(UploadedFile.created_at.asc()).all())
+    if image_rows:
+        lines = "\n".join(f"- {(r.label or r.filename)} | {r.filename}" for r in image_rows)
+        system_prompt += (
+            "\n\nDAFTAR GAMBAR TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + lines + "\n"
+            "ATURAN GAMBAR (wajib):\n"
+            "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: filename]` untuk tiap gambar dari daftar yang cocok.\n"
+            "2. Pakai filename PERSIS seperti di daftar. DILARANG mengarang nama file.\n"
+            "3. Tidak ada gambar yang cocok -> katakan belum tersedia, JANGAN tulis marker.\n"
+            "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar."
+        )
+
     start = time.time()
     try:
         if pending_photo:
@@ -1105,10 +1119,40 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
     response_time = round(time.time() - start, 2)
 
+    clean_reply, wanted = image_markers.parse_image_markers(reply)
     try:
-        telegram_api.send_message(token, chat_id, reply)
+        telegram_api.send_message(token, chat_id, clean_reply if clean_reply else "Berikut gambarnya ya.")
     except Exception:
         pass
+
+    paths = []
+    for name in wanted:
+        row = (db.query(UploadedFile)
+               .filter(UploadedFile.bot_id == bot.id, UploadedFile.filename == name,
+                       UploadedFile.file_type.in_(config.IMAGE_EXTS)).first())
+        if row:
+            p = config.resolve_upload_path(row.file_path)
+            if p and os.path.exists(p):
+                paths.append(p)
+    try:
+        # ponytail: kirim semua; Telegram maks 10 foto per album, jadi pecah per 10
+        for i in range(0, len(paths), 10):
+            chunk = paths[i:i + 10]
+            if len(chunk) == 1:
+                telegram_api.send_photo(token, chat_id, chunk[0])
+            else:
+                try:
+                    telegram_api.send_media_group(token, chat_id, chunk)
+                except Exception:
+                    for p in chunk:
+                        telegram_api.send_photo(token, chat_id, p)
+        if wanted and not paths:
+            telegram_api.send_message(token, chat_id, "Maaf, gambar untuk itu belum tersedia ya.")
+    except Exception:
+        try:
+            telegram_api.send_message(token, chat_id, "Maaf, gambar gagal dikirim. Coba lagi ya.")
+        except Exception:
+            pass
 
     # customer minta qris & ada gambar QRIS -> kirim gambarnya
     if bot.qris_image_path and "qris" in text.lower():
