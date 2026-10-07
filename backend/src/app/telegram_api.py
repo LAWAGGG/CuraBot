@@ -1,8 +1,27 @@
 import json
 
+import io
 import requests
 
 BASE = "https://api.telegram.org"
+
+MAX_SEND_BYTES = 1_500_000
+MAX_SEND_SIDE = 1600
+
+
+def _photo_bytes(photo_path: str) -> tuple:
+    with open(photo_path, "rb") as f:
+        raw = f.read()
+    if len(raw) <= MAX_SEND_BYTES:
+        return photo_path.rsplit(".", 1)[-1].lower(), raw
+    from PIL import Image
+    img = Image.open(io.BytesIO(raw))
+    img.thumbnail((MAX_SEND_SIDE, MAX_SEND_SIDE))
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=85, optimize=True)
+    return "jpg", buf.getvalue()
 
 
 def _call(token: str, method: str, **kwargs):
@@ -42,13 +61,13 @@ def download_file(token: str, file_path: str) -> bytes:
 
 
 def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
-    with open(photo_path, "rb") as f:
-        r = requests.post(
-            f"{BASE}/bot{token}/sendPhoto",
-            data={"chat_id": chat_id, "caption": caption[:1000]},
-            files={"photo": f},
-            timeout=30,
-        )
+    ext, data = _photo_bytes(photo_path)
+    r = requests.post(
+        f"{BASE}/bot{token}/sendPhoto",
+        data={"chat_id": chat_id, "caption": caption[:1000]},
+        files={"photo": (f"photo.{ext}", data)},
+        timeout=30,
+    )
     data = r.json()
     if not data.get("ok"):
         raise ValueError(data.get("description", "Telegram API error"))
@@ -58,21 +77,18 @@ def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
 def send_media_group(token: str, chat_id, photo_paths: list, caption: str = ""):
     media = []
     files = {}
-    try:
-        for i, p in enumerate(photo_paths[:10]):
-            name = f"file{i}"
-            files[name] = open(p, "rb")
-            media.append({"type": "photo", "media": f"attach://{name}",
-                          **({"caption": caption[:1000]} if i == 0 and caption else {})})
-        r = requests.post(
-            f"{BASE}/bot{token}/sendMediaGroup",
-            data={"chat_id": chat_id, "media": json.dumps(media)},
-            files=files,
-            timeout=60,
-        )
-    finally:
-        for f in files.values():
-            f.close()
+    for i, p in enumerate(photo_paths[:10]):
+        name = f"file{i}"
+        ext, data = _photo_bytes(p)
+        files[name] = (f"photo.{ext}", data)
+        media.append({"type": "photo", "media": f"attach://{name}",
+                      **({"caption": caption[:1000]} if i == 0 and caption else {})})
+    r = requests.post(
+        f"{BASE}/bot{token}/sendMediaGroup",
+        data={"chat_id": chat_id, "media": json.dumps(media)},
+        files=files,
+        timeout=60,
+    )
     data = r.json()
     if not data.get("ok"):
         raise ValueError(data.get("description", "Telegram API error"))
