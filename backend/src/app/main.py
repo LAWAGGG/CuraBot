@@ -29,6 +29,10 @@ from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, C
 
 app = FastAPI(title="CuraBot API")
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
+
+
+def order_is_confirmed(order: dict | None) -> bool:
+    return isinstance(order, dict) and order.get("customer_confirmed") is True
 app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
 app.add_middleware(
     CORSMiddleware,
@@ -1176,13 +1180,6 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                 and (payment.payment_stage_active(bot, latest_order)
                      or payment.mentions_payment(text)))
     pay_kb = payment.payment_keyboard(bot) if show_pay else None
-    try:
-        telegram_api.send_message(token, chat_id,
-                                  clean_reply if clean_reply else "Berikut gambarnya ya.",
-                                  reply_markup=pay_kb)
-    except Exception:
-        pass
-
     paths = []
     for name in wanted:
         # ponytail: toleransi format lama "label | filename" -> coba bagian filename juga
@@ -1256,7 +1253,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     # ponytail: hanya simpan/update order setelah customer mengonfirmasi ringkasan dari AI
     saved_order = None
-    if order and existing and order.get("customer_confirmed"):
+    if order and existing and order_is_confirmed(order):
         # 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
         new_products = order.get("products") or existing.products
         # ponytail: note per produk — bila AI menghilangkan note lama untuk produk yg sama, pulihkan
@@ -1278,7 +1275,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         # ponytail: status TIDAK diubah dari sisi chat — hanya creator yang boleh mengubah status order
         db.commit()
         saved_order = existing
-    elif order and order.get("customer_confirmed"):
+    elif order and order_is_confirmed(order):
         status = "pending" if order.get("total_price") is not None else "incomplete"
         new_order = ExtractedOrder(
             bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
@@ -1294,6 +1291,13 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             excel_service.append_order(bot_id, order, uid, status)
         except Exception:
             pass
+
+    try:
+        telegram_api.send_message(token, chat_id,
+                                  clean_reply if clean_reply else "Berikut gambarnya ya.",
+                                  reply_markup=pay_kb)
+    except Exception:
+        pass
 
     # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
     if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):

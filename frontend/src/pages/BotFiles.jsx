@@ -25,8 +25,10 @@ export default function BotFiles() {
     apiFetch(filesKey, { url: `/api/files/${bot.id}` }),
   )
   const files = data?.files ?? []
-  const imageCount = files.filter((f) => IMAGE_EXTS.includes((f.file_type ?? '').toLowerCase())).length
-  const docCount = files.length - imageCount
+  const images = files.filter((f) => IMAGE_EXTS.includes((f.file_type ?? '').toLowerCase()))
+  const docs = files.filter((f) => !IMAGE_EXTS.includes((f.file_type ?? '').toLowerCase()))
+  const imageCount = images.length
+  const docCount = docs.length
   const docRemaining = Math.max(0, MAX_FILES - docCount)
   const imageRemaining = Math.max(0, MAX_IMAGE_FILES - imageCount)
 
@@ -38,6 +40,8 @@ export default function BotFiles() {
   const [labels, setLabels] = useState({})
   const [editing, setEditing] = useState(null)
   const [editLabel, setEditLabel] = useState('')
+  const [viewing, setViewing] = useState(null)
+  const [tab, setTab] = useState('docs')
 
   const uploadAll = async () => {
     if (pending.length === 0) return
@@ -162,11 +166,32 @@ export default function BotFiles() {
       </section>
 
       <section aria-labelledby="files-title">
-        <h2 id="files-title" className="mb-3 font-semibold">
-          Berkas terunggah
-        </h2>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <h2 id="files-title" className="font-semibold">
+            Berkas terunggah
+          </h2>
+          <div className="relative grid grid-cols-2 rounded-lg border border-border bg-muted p-0.5 text-xs" role="tablist">
+            <span
+              aria-hidden="true"
+              className="absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
+              style={{ transform: tab === 'images' ? 'translateX(100%)' : 'translateX(0)' }}
+            />
+            {[{ id: 'docs', label: `Berkas (${docCount})` }, { id: 'images', label: `Gambar (${imageCount})` }].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                onClick={() => setTab(t.id)}
+                className={`relative z-10 rounded-md px-3 py-1 transition-colors ${tab === t.id ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-        {loading && !data ? (
+        {tab === 'docs' ? (loading && !data ? (
           <div className="space-y-2">
             <Skeleton className="h-14 rounded-lg" />
             <Skeleton className="h-14 rounded-lg" />
@@ -179,7 +204,7 @@ export default function BotFiles() {
               Coba Lagi
             </Button>
           </div>
-        ) : files.length === 0 ? (
+        ) : docs.length === 0 ? (
           <EmptyState
             icon={FileText}
             title="Belum ada berkas"
@@ -187,7 +212,7 @@ export default function BotFiles() {
           />
         ) : (
           <ul className="space-y-2">
-            {files.map((file, index) => {
+            {docs.map((file, index) => {
               const isSheet = file.file_type === '.xlsx'
               const Icon = isSheet ? FileSpreadsheet : FileText
               return (
@@ -228,7 +253,32 @@ export default function BotFiles() {
               )
             })}
           </ul>
-        )}
+        )) : (images.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Belum ada gambar.</p>
+        ) : (
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+            {images.map((file, index) => (
+              <li key={file.id} style={{ animationDelay: `${index * 50}ms` }} className="rise">
+                <button
+                  type="button"
+                  onClick={() => setViewing(file)}
+                  className="group block w-full overflow-hidden rounded-xl border border-border bg-background text-left"
+                  aria-label={`Lihat ${file.label ?? file.filename}`}
+                >
+                  <img
+                    src={file.media_url}
+                    alt={file.label ?? file.filename}
+                    loading="lazy"
+                    className="aspect-square w-full object-cover transition group-hover:opacity-90"
+                  />
+                  <p className="truncate px-3 py-2 text-xs font-medium" title={file.label ?? file.filename}>
+                    {file.label ?? file.filename}
+                  </p>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ))}
       </section>
 
       <ConfirmDialog
@@ -240,6 +290,36 @@ export default function BotFiles() {
         onConfirm={confirmDelete}
         loading={deletingBusy}
       />
+
+      {viewing ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setViewing(null)}>
+          <div className="w-full max-w-2xl space-y-3 rounded-xl border border-border bg-background p-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="truncate font-semibold text-sm">{viewing.label ?? viewing.filename}</h3>
+                <p className="text-xs text-muted-foreground">
+                  {formatBytes(viewing.file_size)} · {formatDateTime(viewing.created_at)}
+                </p>
+              </div>
+              <button type="button" onClick={() => setViewing(null)} aria-label="Tutup">
+                <X className="size-4" />
+              </button>
+            </div>
+            <img src={viewing.media_url} alt={viewing.label ?? viewing.filename} className="max-h-[70vh] w-full rounded-lg object-contain" />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setEditing(viewing); setEditLabel(viewing.label ?? viewing.filename); setViewing(null) }}>
+                <Pencil aria-hidden="true" /> Edit Label
+              </Button>
+              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={() => { setDeleting(viewing); setViewing(null) }}>
+                <Trash2 aria-hidden="true" /> Hapus
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <a href={viewing.media_url} target="_blank" rel="noreferrer">Buka</a>
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {editing ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
