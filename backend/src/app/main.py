@@ -837,8 +837,17 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                             # ponytail: caption ada tapi analyze_photo tak menjawab -> kirim ke vision lagi dengan gambar
                             try:
                                 files2 = files
+                                rows = (db.query(Message)
+                                        .filter(Message.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                                Message.id < photo_msg.id)
+                                        .order_by(desc(Message.created_at)).limit(4).all())
+                                hist = []
+                                for r in reversed(rows):
+                                    hist.append({"role": "user", "text": r.message_text})
+                                    if r.response_text:
+                                        hist.append({"role": "model", "text": r.response_text})
                                 reply2, _m = gemini_service.answer_with_image(
-                                    api_key, bot.system_prompt or "", kb, [], data, caption)
+                                    api_key, bot.system_prompt or "", kb, hist, data, caption)
                                 telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
                                 photo_msg.response_text = reply2
                                 db.commit()
@@ -868,7 +877,25 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                                                   "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
                         if not caption:
                             return {"ok": True}
-                        text = caption
+                        try:
+                            rows = (db.query(Message)
+                                    .filter(Message.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                            Message.id < photo_msg.id)
+                                    .order_by(desc(Message.created_at)).limit(4).all())
+                            hist = []
+                            for r in reversed(rows):
+                                hist.append({"role": "user", "text": r.message_text})
+                                if r.response_text:
+                                    hist.append({"role": "model", "text": r.response_text})
+                            reply2, _m = gemini_service.answer_with_image(
+                                api_key, bot.system_prompt or "", kb, hist, data, caption)
+                            telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                            photo_msg.response_text = reply2
+                            db.commit()
+                            emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                            return {"ok": True}
+                        except Exception:
+                            text = caption
                 except Exception:
                     telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                               "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
