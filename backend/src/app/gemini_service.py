@@ -86,6 +86,7 @@ def chat_with_fallback(api_key: str, system_prompt: str, file_context: str,
         try:
             return _chat_reply(api_key, model, sys, history, user_text, 2048, 0.7), label
         except Exception as e:
+            print(f"[gemini] model {model} gagal: {type(e).__name__}: {e}")
             if not _is_rate_limit(e):
                 # bukan limit RPD: error nyata (bad prompt, dsb) -> stop, jangan buang kuota model lain
                 raise
