@@ -225,14 +225,27 @@ def delete_bot(bot_id: int, user_id: int = Depends(security.get_current_user),
 
 @app.post("/api/files/upload", status_code=201)
 def upload_file(bot_id: int = Form(...), file: UploadFile = File(...),
+                label: str = Form(default=""),
                 user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
     get_bot_or_404(db, user_id, bot_id)
     count = db.query(func.count(UploadedFile.id)).filter(UploadedFile.bot_id == bot_id).scalar()
-    if count >= config.MAX_FILES_PER_BOT:
-        raise HTTPException(400, f"Max {config.MAX_FILES_PER_BOT} files per bot")
+    if count >= config.MAX_FILES_PER_BOT + config.MAX_IMAGE_FILES_PER_BOT:
+        raise HTTPException(400, "File limit reached")
     ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in (".pdf", ".docx", ".doc", ".xlsx"):
-        raise HTTPException(400, "Only PDF, DOCX, and XLSX allowed")
+    is_image = ext in config.IMAGE_EXTS
+    allowed = config.IMAGE_EXTS + (".pdf", ".docx", ".doc", ".xlsx")
+    if ext not in allowed:
+        raise HTTPException(400, f"Only {', '.join(allowed)} allowed")
+    if is_image:
+        img_count = (db.query(func.count(UploadedFile.id))
+                     .filter(UploadedFile.bot_id == bot_id, UploadedFile.file_type.in_(config.IMAGE_EXTS)).scalar())
+        if img_count >= config.MAX_IMAGE_FILES_PER_BOT:
+            raise HTTPException(400, f"Max {config.MAX_IMAGE_FILES_PER_BOT} images per bot")
+    else:
+        doc_count = (db.query(func.count(UploadedFile.id))
+                     .filter(UploadedFile.bot_id == bot_id, ~UploadedFile.file_type.in_(config.IMAGE_EXTS)).scalar())
+        if doc_count >= config.MAX_FILES_PER_BOT:
+            raise HTTPException(400, f"Max {config.MAX_FILES_PER_BOT} files per bot")
     data = file.file.read()
     if len(data) > config.MAX_FILE_SIZE:
         raise HTTPException(400, "File too large (max 25MB)")
@@ -241,9 +254,10 @@ def upload_file(bot_id: int = Form(...), file: UploadFile = File(...),
     dest = os.path.join(dest_dir, f"{int(time.time())}_{os.path.basename(file.filename)}")
     with open(dest, "wb") as f:
         f.write(data)
-    text = get_text_from_file(dest, file.filename)
+    text = "" if is_image else get_text_from_file(dest, file.filename)
     row = UploadedFile(bot_id=bot_id, filename=file.filename, file_path=dest,
-                       file_type=ext, file_size=len(data), extracted_text=text)
+                       file_type=ext, file_size=len(data), extracted_text=text,
+                       label=(label or "").strip() or file.filename)
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -290,7 +304,7 @@ def list_files(bot_id: int, user_id: int = Depends(security.get_current_user),
             .order_by(desc(UploadedFile.created_at)).all())
     return {"files": [{
         "id": r.id, "bot_id": r.bot_id, "filename": r.filename, "file_type": r.file_type,
-        "file_size": r.file_size, "created_at": str(r.created_at),
+        "file_size": r.file_size, "created_at": str(r.created_at), "label": r.label,
     } for r in rows]}
 
 
@@ -310,6 +324,18 @@ def delete_file(file_id: int, user_id: int = Depends(security.get_current_user),
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+@app.patch("/api/files/{file_id}")
+def update_file_label(file_id: int, payload: schemas.FileLabelIn,
+                      user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    row = (db.query(UploadedFile).join(Bot, Bot.id == UploadedFile.bot_id)
+           .filter(UploadedFile.id == file_id, Bot.user_id == user_id).first())
+    if not row:
+        raise HTTPException(404, "File not found")
+    row.label = payload.label.strip()
+    db.commit()
+    return {"ok": True, "label": row.label}
 
 
 # ---------- MESSAGES ----------

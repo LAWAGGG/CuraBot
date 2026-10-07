@@ -45,3 +45,7 @@ class ReplyIn(BaseModel):
 
 class ModeIn(BaseModel):
     mode: str = Field(pattern="^(ai|manual)$")
+
+
+class FileLabelIn(BaseModel):
+    label: str = Field(min_length=1, max_length=255)
