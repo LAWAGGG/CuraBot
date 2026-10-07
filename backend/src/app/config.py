@@ -58,6 +58,8 @@ def chat_media_url(bot_id: int, path: str | None) -> str | None:
 
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", str(25 * 1024 * 1024)))
 MAX_FILES_PER_BOT = int(os.getenv("MAX_FILES_PER_BOT", "10"))
+MAX_IMAGE_FILES_PER_BOT = int(os.getenv("MAX_IMAGE_FILES_PER_BOT", "50"))
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 GEMINI_PRIMARY = os.getenv("GEMINI_PRIMARY", "gemini-3.6-flash")
 GEMINI_FALLBACK = os.getenv("GEMINI_FALLBACK", "gemini-3.5-flash-lite")
