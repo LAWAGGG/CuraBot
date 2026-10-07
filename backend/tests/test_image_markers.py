@@ -36,3 +36,9 @@ class ParseMarkersTest(unittest.TestCase):
     def test_blank_lines_collapse(self):
         clean, files = parse_image_markers("halo\n\n\n\nhalo")
         assert clean == "halo\n\nhalo"
+
+    def test_crlf_normalization(self):
+        clean, files = parse_image_markers("baris1\r\n\r\n\r\nbaris2 [IMG:\r\na.jpg]")
+        assert "\r" not in clean
+        assert "\n\n\n" not in clean
+        assert files == ["a.jpg"]
