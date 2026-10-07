@@ -508,6 +508,7 @@ export default function BotWizard() {
                 value={files}
                 onChange={setFiles}
                 maxFiles={10}
+                accept=".pdf,.docx,.doc,.xlsx,.jpg,.jpeg,.png,.webp"
                 hint="Sangat disarankan: unggah daftar menu/produk beserta harga agar bot dapat menjawab dan mencatat pesanan dengan benar."
               />
             </>

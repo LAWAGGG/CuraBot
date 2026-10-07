@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { FileSpreadsheet, FileText, Loader2, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { FileSpreadsheet, FileText, Loader2, Pencil, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -30,6 +30,9 @@ export default function BotFiles() {
   const [progress, setProgress] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [deletingBusy, setDeletingBusy] = useState(false)
+  const [labels, setLabels] = useState({})
+  const [editing, setEditing] = useState(null)
+  const [editLabel, setEditLabel] = useState('')
 
   const uploadAll = async () => {
     if (pending.length === 0) return
@@ -40,6 +43,7 @@ export default function BotFiles() {
       const formData = new FormData()
       formData.append('bot_id', bot.id)
       formData.append('file', pending[index])
+      formData.append('label', labels[index] ?? '')
       try {
         await uploadFile('/api/files/upload', formData, {
           onProgress: (percent) =>
@@ -53,6 +57,7 @@ export default function BotFiles() {
     invalidate(filesKey)
     await refresh()
     setPending([])
+    setLabels({})
     setUploading(false)
     setProgress(null)
     if (failed === 0) toast.success('Semua berkas berhasil diunggah.')
@@ -103,9 +108,26 @@ export default function BotFiles() {
               onChange={setPending}
               maxFiles={remaining}
               disabled={uploading}
+              accept=".pdf,.docx,.doc,.xlsx,.jpg,.jpeg,.png,.webp"
             />
             {pending.length > 0 ? (
               <div className="mt-4 space-y-3">
+                {pending.map((file, index) => (
+                  <div key={file.name} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm">{file.name}</p>
+                      <input
+                        className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1 text-xs"
+                        placeholder="Label (opsional, mis. Baju Merah)"
+                        value={labels[index] ?? ''}
+                        onChange={(e) => setLabels((s) => ({ ...s, [index]: e.target.value }))}
+                      />
+                    </div>
+                    <button type="button" onClick={() => setPending((p) => p.filter((_, i) => i !== index))} aria-label="Hapus">
+                      <X className="size-4" />
+                    </button>
+                  </div>
+                ))}
                 {progress ? (
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-xs text-muted-foreground">
@@ -170,13 +192,21 @@ export default function BotFiles() {
                     <Icon className="size-4.5" aria-hidden="true" />
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium" title={file.filename}>
-                      {file.filename}
+                    <p className="truncate text-sm font-medium" title={file.label ?? file.filename}>
+                      {file.label ?? file.filename}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {formatBytes(file.file_size)} · {formatDateTime(file.created_at)}
                     </p>
                   </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => { setEditing(file); setEditLabel(file.label ?? file.filename) }}
+                    aria-label="Edit label"
+                  >
+                    <Pencil aria-hidden="true" />
+                  </Button>
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -202,6 +232,27 @@ export default function BotFiles() {
         onConfirm={confirmDelete}
         loading={deletingBusy}
       />
+
+      {editing ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="w-80 rounded-xl border border-border bg-background p-4 space-y-3">
+            <h3 className="font-semibold text-sm">Edit label</h3>
+            <input className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+                   value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setEditing(null)}>Batal</Button>
+              <Button onClick={async () => {
+                try {
+                  await apiFetch(null, { method: 'patch', url: `/api/files/${editing.id}`, data: { label: editLabel } })
+                  invalidate(filesKey); await refresh()
+                  toast.success('Label diperbarui.')
+                  setEditing(null)
+                } catch (e) { toast.error(errorMessage(e)) }
+              }}>Simpan</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
