@@ -47,6 +47,7 @@ class UploadedFile(Base):
     file_type = Column(String(50))
     file_size = Column(Integer)
     extracted_text = Column(Text)
+    label = Column(String(255), nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     bot = relationship("Bot", back_populates="files")
 
