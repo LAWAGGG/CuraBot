@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Loader2, Pencil, RefreshCw, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -34,6 +34,7 @@ const STEP_LABELS = [
   'Tugas',
   'Kunci API',
   'Katalog',
+  'Pembayaran',
   'Tinjauan',
 ]
 
@@ -103,6 +104,10 @@ export default function BotWizard() {
   const [answers, setAnswers] = useState(() => loadDraft() ?? EMPTY_ANSWERS)
   const [files, setFiles] = useState([])
   const [apiKey, setApiKey] = useState('')
+  const [paymentInfo, setPaymentInfo] = useState('')
+  const [cashEnabled, setCashEnabled] = useState(false)
+  const [qrisFile, setQrisFile] = useState(null)
+  const qrisInputRef = useRef(null)
   const [showKey, setShowKey] = useState(false)
   const [step, setStep] = useState(0)
   const [errors, setErrors] = useState({})
@@ -195,8 +200,20 @@ export default function BotWizard() {
           name: answers.name.trim(),
           system_prompt: promptText,
           api_key: apiKey.trim(),
+          payment_info: paymentInfo.trim() || null,
+          cash_enabled: cashEnabled,
         },
       })
+
+      if (qrisFile) {
+        const qrisData = new FormData()
+        qrisData.append('file', qrisFile)
+        try {
+          await uploadFile(`/api/bots/${bot.id}/qris`, qrisData)
+        } catch {
+          toast.warning('QRIS gagal diunggah. Unggah ulang di Pengaturan bot.')
+        }
+      }
 
       let failed = 0
       for (let index = 0; index < files.length; index += 1) {
@@ -517,6 +534,68 @@ export default function BotWizard() {
           {step === 7 ? (
             <>
               <StepHeading
+                title="Bagaimana pelanggan membayar? (opsional)"
+                description="Bot menampilkan pilihan ini sebagai tombol saat pesanan siap dibayar. Boleh dilewati, bisa diisi nanti di Pengaturan."
+              />
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <Label htmlFor="payment-info">Rekening / info pembayaran</Label>
+                  <Textarea
+                    id="payment-info"
+                    rows={3}
+                    placeholder="Contoh: Transfer BCA 1234567890 a.n. Toko Bu Sari."
+                    value={paymentInfo}
+                    onChange={(event) => setPaymentInfo(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Disampaikan persis seperti yang Anda tulis saat pelanggan memilih Transfer/Rekening.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>Gambar QRIS</Label>
+                  <div className="flex items-center gap-4">
+                    {qrisFile ? (
+                      <img
+                        src={URL.createObjectURL(qrisFile)}
+                        alt="Pratinjau QRIS"
+                        className="h-28 w-28 rounded-xl border border-border object-contain p-1"
+                      />
+                    ) : null}
+                    <input
+                      ref={qrisInputRef}
+                      type="file"
+                      accept=".jpg,.jpeg,.png"
+                      className="sr-only"
+                      onChange={(event) => {
+                        setQrisFile(event.target.files?.[0] ?? null)
+                        event.target.value = ''
+                      }}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => qrisInputRef.current?.click()}
+                    >
+                      {qrisFile ? 'Ganti Gambar' : 'Unggah QRIS'}
+                    </Button>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={cashEnabled}
+                    onChange={(event) => setCashEnabled(event.target.checked)}
+                    className="size-4 accent-primary"
+                  />
+                  Terima pembayaran tunai (cash) saat pesanan diterima
+                </label>
+              </div>
+            </>
+          ) : null}
+
+          {step === 8 ? (
+            <>
+              <StepHeading
                 title="Periksa kembali pengaturan bot Anda"
                 description="Klik Ubah bila ada yang ingin diperbaiki. Jika sudah sesuai, buat bot Anda."
               />
@@ -552,6 +631,19 @@ export default function BotWizard() {
                       : 'Belum ada berkas'
                   }
                   onEdit={() => goTo(6)}
+                />
+                <ReviewRow
+                  label="Pembayaran"
+                  value={
+                    [
+                      paymentInfo.trim() || null,
+                      qrisFile ? `QRIS: ${qrisFile.name}` : null,
+                      cashEnabled ? 'Tunai (cash)' : null,
+                    ]
+                      .filter(Boolean)
+                      .join('\n') || 'Belum diatur'
+                  }
+                  onEdit={() => goTo(7)}
                 />
               </div>
 
