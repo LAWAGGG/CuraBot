@@ -30,6 +30,7 @@ export default function BotSettings() {
   const [name, setName] = useState(bot.name)
   const [systemPrompt, setSystemPrompt] = useState(bot.system_prompt)
   const [paymentInfo, setPaymentInfo] = useState(bot.payment_info ?? '')
+  const [cashEnabled, setCashEnabled] = useState(Boolean(bot.cash_enabled))
   const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [qrisUploading, setQrisUploading] = useState(false)
@@ -41,12 +42,14 @@ export default function BotSettings() {
     name.trim() !== bot.name ||
     systemPrompt !== bot.system_prompt ||
     paymentInfo !== (bot.payment_info ?? '') ||
+    cashEnabled !== Boolean(bot.cash_enabled) ||
     apiKey.trim() !== ''
 
   const resetForm = () => {
     setName(bot.name)
     setSystemPrompt(bot.system_prompt)
     setPaymentInfo(bot.payment_info ?? '')
+    setCashEnabled(Boolean(bot.cash_enabled))
     setApiKey('')
   }
 
@@ -69,6 +72,7 @@ export default function BotSettings() {
           name: name.trim(),
           system_prompt: systemPrompt,
           payment_info: paymentInfo,
+          cash_enabled: cashEnabled,
           ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}),
         },
       })
@@ -191,6 +195,16 @@ export default function BotSettings() {
               menanyakan cara bayar.
             </p>
           </div>
+
+          <label className="flex items-center gap-2.5 text-sm">
+            <input
+              type="checkbox"
+              checked={cashEnabled}
+              onChange={(event) => setCashEnabled(event.target.checked)}
+              className="size-4 accent-primary"
+            />
+            Terima pembayaran tunai (cash) saat pesanan diterima
+          </label>
 
           <div className="space-y-3">
             <Label>Gambar QRIS (opsional)</Label>
