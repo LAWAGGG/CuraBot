@@ -1,6 +1,6 @@
 from datetime import datetime
 from sqlalchemy import (
-    Column, Integer, String, Text, DateTime, Float,
+    Column, Integer, String, Text, DateTime, Float, Boolean,
     ForeignKey, Enum, JSON, Numeric, Index, UniqueConstraint, func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -31,6 +31,7 @@ class Bot(Base):
     status = Column(Enum("active", "inactive"), default="active")
     payment_info = Column(Text)
     qris_image_path = Column(String(500))
+    cash_enabled = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at = Column(DateTime, server_default=func.now())
     user = relationship("User", back_populates="bots")
     files = relationship("UploadedFile", back_populates="bot")

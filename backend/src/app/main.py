@@ -94,6 +94,7 @@ def public_bot(bot: Bot) -> dict:
         "telegram_bot_name": bot.telegram_bot_name,
         "telegram_link": bot.telegram_link,
         "payment_info": bot.payment_info,
+        "cash_enabled": bool(bot.cash_enabled),
         "qris_image_url": config.upload_url(bot.id, bot.qris_image_path),
         "status": bot.status,
         "created_at": str(bot.created_at),
@@ -172,6 +173,7 @@ def create_bot(body: schemas.BotCreateIn, user_id: int = Depends(security.get_cu
         user_id=user_id, name=body.name, system_prompt=body.system_prompt,
         api_key_encrypted=security.encrypt(body.api_key),
         payment_info=body.payment_info,
+        cash_enabled=bool(body.cash_enabled),
         telegram_bot_name=config.TELEGRAM_BOT_USERNAME,
         telegram_link="",
     )
@@ -209,6 +211,8 @@ def update_bot(bot_id: int, body: schemas.BotUpdateIn, user_id: int = Depends(se
         bot.api_key_encrypted = security.encrypt(body.api_key)
     if body.payment_info is not None:
         bot.payment_info = body.payment_info
+    if body.cash_enabled is not None:
+        bot.cash_enabled = body.cash_enabled
     db.commit()
     db.refresh(bot)
     return public_bot(bot)

@@ -18,6 +18,7 @@ class BotCreateIn(BaseModel):
     system_prompt: str = Field(min_length=10)
     api_key: str = Field(min_length=10)
     payment_info: Optional[str] = None
+    cash_enabled: Optional[bool] = None
 
 
 class BotUpdateIn(BaseModel):
@@ -25,6 +26,7 @@ class BotUpdateIn(BaseModel):
     system_prompt: Optional[str] = None
     api_key: Optional[str] = None
     payment_info: Optional[str] = None
+    cash_enabled: Optional[bool] = None
 
     @field_validator("system_prompt")
     @classmethod
