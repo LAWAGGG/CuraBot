@@ -1095,8 +1095,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         system_prompt += (
             "\n\nDAFTAR GAMBAR TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + lines + "\n"
             "ATURAN GAMBAR (wajib):\n"
-            "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: filename]` untuk tiap gambar dari daftar yang cocok.\n"
-            "2. Pakai filename PERSIS seperti di daftar. DILARANG mengarang nama file.\n"
+            "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: label]` dengan label PERSIS seperti di daftar untuk tiap gambar yang cocok. Boleh juga pakai filename bila label kosong.\n"
+            "2. DILARANG mengarang label/filename yang tidak ada di daftar.\n"
             "3. Tidak ada gambar yang cocok -> katakan belum tersedia, JANGAN tulis marker.\n"
             "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar."
         )
@@ -1127,9 +1127,16 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     paths = []
     for name in wanted:
-        row = (db.query(UploadedFile)
-               .filter(UploadedFile.bot_id == bot.id, UploadedFile.filename == name,
-                       UploadedFile.file_type.in_(config.IMAGE_EXTS)).first())
+        # ponytail: toleransi format lama "label | filename" -> coba bagian filename juga
+        candidates = [name] + ([name.rsplit("|", 1)[-1].strip()] if "|" in name else [])
+        row = None
+        for cand in candidates:
+            row = (db.query(UploadedFile)
+                   .filter(UploadedFile.bot_id == bot.id,
+                           ((UploadedFile.label == cand) | (UploadedFile.filename == cand)),
+                           UploadedFile.file_type.in_(config.IMAGE_EXTS)).first())
+            if row:
+                break
         if row:
             p = config.resolve_upload_path(row.file_path)
             if p and os.path.exists(p):
