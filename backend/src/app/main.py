@@ -814,7 +814,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                                             config.resolve_upload_path(bot.qris_image_path),
                                             caption="QRIS pembayaran")
                 telegram_api.send_message(config.TELEGRAM_TOKEN, cb_chat_id, text)
-                msg = Message(bot_id=bot.id, user_id=str(cb_chat_id), chat_id=str(cb_chat_id),
+                msg = Message(bot_id=bot.id, user_id=str(cb.get("from", {}).get("id") or cb_chat_id), chat_id=str(cb_chat_id),
                               sender="user",
                               message_text=f"[memilih metode pembayaran: {cb_data.removeprefix('pay:')}]",
                               response_text=text)
