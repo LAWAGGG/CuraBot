@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader2, Pencil, RefreshCw, Sparkles } from 'lucide-react'
+import { Banknote, Check, Eye, EyeOff, ImagePlus, Landmark, Loader2, Pencil, QrCode, RefreshCw, Sparkles } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import PageHeader from '@/components/PageHeader'
@@ -537,9 +537,19 @@ export default function BotWizard() {
                 title="Bagaimana pelanggan membayar? (opsional)"
                 description="Bot menampilkan pilihan ini sebagai tombol saat pesanan siap dibayar. Boleh dilewati, bisa diisi nanti di Pengaturan."
               />
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <Label htmlFor="payment-info">Rekening / info pembayaran</Label>
+              <div className="space-y-4">
+                <div className="space-y-3 rounded-xl border-2 border-border p-4">
+                  <div className="flex items-start gap-3">
+                    <Landmark className="mt-0.5 size-4.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <div>
+                      <Label htmlFor="payment-info" className="font-semibold">
+                        Transfer / Rekening
+                      </Label>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Ditampilkan apa adanya saat pelanggan memilih transfer.
+                      </p>
+                    </div>
+                  </div>
                   <Textarea
                     id="payment-info"
                     rows={3}
@@ -547,48 +557,98 @@ export default function BotWizard() {
                     value={paymentInfo}
                     onChange={(event) => setPaymentInfo(event.target.value)}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Disampaikan persis seperti yang Anda tulis saat pelanggan memilih Transfer/Rekening.
-                  </p>
                 </div>
-                <div className="space-y-2">
-                  <Label>Gambar QRIS</Label>
-                  <div className="flex items-center gap-4">
-                    {qrisFile ? (
+
+                <div className="space-y-3 rounded-xl border-2 border-border p-4">
+                  <div className="flex items-start gap-3">
+                    <QrCode className="mt-0.5 size-4.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <div>
+                      <p className="font-semibold">QRIS</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Gambar dikirim ke pelanggan saat mereka memilih QRIS. JPG/PNG.
+                      </p>
+                    </div>
+                  </div>
+                  <input
+                    ref={qrisInputRef}
+                    type="file"
+                    accept=".jpg,.jpeg,.png"
+                    className="sr-only"
+                    onChange={(event) => {
+                      setQrisFile(event.target.files?.[0] ?? null)
+                      event.target.value = ''
+                    }}
+                  />
+                  {qrisFile ? (
+                    <div className="flex items-center gap-3">
                       <img
                         src={URL.createObjectURL(qrisFile)}
                         alt="Pratinjau QRIS"
-                        className="h-28 w-28 rounded-xl border border-border object-contain p-1"
+                        className="h-20 w-20 shrink-0 rounded-lg border border-border object-contain p-1"
                       />
-                    ) : null}
-                    <input
-                      ref={qrisInputRef}
-                      type="file"
-                      accept=".jpg,.jpeg,.png"
-                      className="sr-only"
-                      onChange={(event) => {
-                        setQrisFile(event.target.files?.[0] ?? null)
-                        event.target.value = ''
-                      }}
-                    />
-                    <Button
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{qrisFile.name}</p>
+                        <div className="mt-1.5 flex gap-2">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => qrisInputRef.current?.click()}
+                          >
+                            Ganti
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setQrisFile(null)}
+                          >
+                            Hapus
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
                       type="button"
-                      variant="outline"
                       onClick={() => qrisInputRef.current?.click()}
+                      className="flex h-28 w-full flex-col items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-border bg-muted/30 text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
                     >
-                      {qrisFile ? 'Ganti Gambar' : 'Unggah QRIS'}
-                    </Button>
-                  </div>
+                      <ImagePlus className="size-5" aria-hidden="true" />
+                      <span className="text-sm font-medium">Unggah gambar QRIS</span>
+                      <span className="text-xs">Klik untuk memilih file</span>
+                    </button>
+                  )}
                 </div>
-                <label className="flex items-center gap-2.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={cashEnabled}
-                    onChange={(event) => setCashEnabled(event.target.checked)}
-                    className="size-4 accent-primary"
-                  />
-                  Terima pembayaran tunai (cash) saat pesanan diterima
-                </label>
+
+                <button
+                  type="button"
+                  onClick={() => setCashEnabled((value) => !value)}
+                  aria-pressed={cashEnabled}
+                  className={
+                    cashEnabled
+                      ? 'flex w-full items-start gap-3 rounded-xl border-2 border-primary bg-primary/5 p-4 text-left transition-colors'
+                      : 'flex w-full items-start gap-3 rounded-xl border-2 border-border bg-background p-4 text-left transition-colors hover:border-primary/40 hover:bg-primary/5'
+                  }
+                >
+                  <Banknote className="mt-0.5 size-4.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <div className="flex-1">
+                    <span className="block font-semibold">Cash / Tunai</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      Pelanggan membayar langsung saat pesanan diterima.
+                    </span>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className={
+                      cashEnabled
+                        ? 'flex size-5 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground'
+                        : 'size-5 shrink-0 rounded-full border-2 border-border'
+                    }
+                  >
+                    {cashEnabled ? <Check className="size-3" /> : null}
+                  </span>
+                </button>
               </div>
             </>
           ) : null}
