@@ -13,7 +13,9 @@ import { apiFetch, errorMessage, invalidate, uploadFile } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { formatBytes, formatDateTime } from '@/lib/utils'
 
-const MAX_FILES = 10
+const MAX_FILES = 10 // ponytail: mirror backend MAX_FILES_PER_BOT
+const MAX_IMAGE_FILES = 50 // ponytail: mirror backend MAX_IMAGE_FILES_PER_BOT
+const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp']
 
 export default function BotFiles() {
   const { bot } = useOutletContext()
@@ -23,7 +25,10 @@ export default function BotFiles() {
     apiFetch(filesKey, { url: `/api/files/${bot.id}` }),
   )
   const files = data?.files ?? []
-  const remaining = Math.max(0, MAX_FILES - files.length)
+  const imageCount = files.filter((f) => IMAGE_EXTS.includes((f.file_type ?? '').toLowerCase())).length
+  const docCount = files.length - imageCount
+  const docRemaining = Math.max(0, MAX_FILES - docCount)
+  const imageRemaining = Math.max(0, MAX_IMAGE_FILES - imageCount)
 
   const [pending, setPending] = useState([])
   const [uploading, setUploading] = useState(false)
@@ -92,13 +97,13 @@ export default function BotFiles() {
             </p>
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
-            {files.length}/{MAX_FILES} berkas
+            {docCount}/{MAX_FILES} dokumen · {imageCount}/{MAX_IMAGE_FILES} gambar
           </span>
         </div>
 
-        {remaining === 0 ? (
+        {docRemaining === 0 && imageRemaining === 0 ? (
           <p className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-            Batas maksimal {MAX_FILES} berkas sudah tercapai. Hapus berkas lama untuk mengunggah yang
+            Batas maksimal {MAX_FILES} dokumen dan {MAX_IMAGE_FILES} gambar sudah tercapai. Hapus berkas lama untuk mengunggah yang
             baru.
           </p>
         ) : (
@@ -106,14 +111,17 @@ export default function BotFiles() {
             <UploadDropzone
               value={pending}
               onChange={setPending}
-              maxFiles={remaining}
+              maxFiles={docRemaining + imageRemaining}
               disabled={uploading}
               accept=".pdf,.docx,.doc,.xlsx,.jpg,.jpeg,.png,.webp"
             />
+            <p className="mt-2 text-xs text-muted-foreground">
+              Sisa: {docRemaining} dokumen · {imageRemaining} gambar
+            </p>
             {pending.length > 0 ? (
               <div className="mt-4 space-y-3">
                 {pending.map((file, index) => (
-                  <div key={file.name} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+                  <div key={`${file.name}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm">{file.name}</p>
                       <input

@@ -49,3 +49,11 @@ class ModeIn(BaseModel):
 
 class FileLabelIn(BaseModel):
     label: str = Field(min_length=1, max_length=255)
+
+    @field_validator("label")
+    @classmethod
+    def label_not_blank(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("label cannot be blank")
+        return v

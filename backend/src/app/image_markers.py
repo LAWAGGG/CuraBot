@@ -1,7 +1,8 @@
 import re
 
 # ponytail: filenames containing "]" are not parseable by the marker; Telegram catalog filenames with "]" are unsupported.
-_MARKER = re.compile(r"\[\s*IMG:\s*(\S[^\]\n]*?)\s*\]", re.IGNORECASE)
+# Also matches empty markers like "[IMG: ]" so they can be stripped from clean text.
+_MARKER = re.compile(r"\[\s*IMG:\s*([^\]\n]*?)\s*\]", re.IGNORECASE)
 
 def parse_image_markers(text: str) -> tuple[str, list[str]]:
     text = (text or "").replace("\r\n", "\n").replace("\r", "\n")

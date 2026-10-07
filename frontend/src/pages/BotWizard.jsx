@@ -507,7 +507,7 @@ export default function BotWizard() {
               <UploadDropzone
                 value={files}
                 onChange={setFiles}
-                maxFiles={10}
+                maxFiles={60} // ponytail: mirror backend MAX_FILES_PER_BOT + MAX_IMAGE_FILES_PER_BOT
                 accept=".pdf,.docx,.doc,.xlsx,.jpg,.jpeg,.png,.webp"
                 hint="Sangat disarankan: unggah daftar menu/produk beserta harga agar bot dapat menjawab dan mencatat pesanan dengan benar."
               />

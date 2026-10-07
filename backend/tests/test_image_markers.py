@@ -29,9 +29,10 @@ class ParseMarkersTest(unittest.TestCase):
         assert parse_image_markers(None) == ("", [])
 
     def test_marker_without_filename(self):
-        clean, files = parse_image_markers("[IMG: ]")
+        clean, files = parse_image_markers("lihat ini [IMG: ] ya")
         assert files == []
-        assert "[IMG:" in clean
+        assert "[IMG:" not in clean
+        assert clean == "lihat ini  ya"
 
     def test_blank_lines_collapse(self):
         clean, files = parse_image_markers("halo\n\n\n\nhalo")
