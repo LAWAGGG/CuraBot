@@ -53,6 +53,32 @@ def send_photo(token: str, chat_id, photo_path: str, caption: str = ""):
     return data["result"]
 
 
+def send_media_group(token: str, chat_id, photo_paths: list, caption: str = ""):
+    media = []
+    files = {}
+    handles = []
+    for i, p in enumerate(photo_paths[:10]):
+        name = f"file{i}"
+        files[name] = open(p, "rb")
+        media.append({"type": "photo", "media": f"attach://{name}",
+                      **({"caption": caption[:1000]} if i == 0 and caption else {})})
+    try:
+        import json as _json
+        r = requests.post(
+            f"{BASE}/bot{token}/sendMediaGroup",
+            data={"chat_id": chat_id, "media": _json.dumps(media)},
+            files=files,
+            timeout=60,
+        )
+    finally:
+        for f in files.values():
+            f.close()
+    data = r.json()
+    if not data.get("ok"):
+        raise ValueError(data.get("description", "Telegram API error"))
+    return data["result"]
+
+
 def send_message(token: str, chat_id, text: str):
     md = text.replace("**", "*")
     try:
