@@ -16,6 +16,7 @@ const BotOrders = lazy(() => import('@/pages/BotOrders'))
 const BotFiles = lazy(() => import('@/pages/BotFiles'))
 const BotAnalytics = lazy(() => import('@/pages/BotAnalytics'))
 const BotSettings = lazy(() => import('@/pages/BotSettings'))
+const Settings = lazy(() => import('@/pages/Settings'))
 
 
 export default function App() {
@@ -32,6 +33,7 @@ export default function App() {
         >
           <Route path="/" element={<Dashboard />} />
           <Route path="/bots/new" element={<BotWizard />} />
+          <Route path="/pengaturan" element={<Settings />} />
           <Route path="/bots/:id" element={<BotLayout />}>
             <Route index element={<BotOverview />} />
             <Route path="percakapan" element={<BotChats />} />

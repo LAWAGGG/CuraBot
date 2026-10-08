@@ -74,12 +74,12 @@ export default function AddressPicker({ value, onChange }) {
       <div className="relative">
         <div id="address-map" className="h-64 rounded-lg border border-border" />
         <div className="absolute right-2 top-2 flex flex-col gap-1">
-          <button type="button" onClick={() => mapRef.current?.zoomIn()} className="rounded bg-white/90 px-2 py-1 text-sm shadow border border-border">+</button>
-          <button type="button" onClick={() => mapRef.current?.zoomOut()} className="rounded bg-white/90 px-2 py-1 text-sm shadow border border-border">−</button>
+          <button type="button" onClick={() => mapRef.current?.zoomIn()} className="rounded bg-background/90 px-2 py-1 text-sm shadow border border-border">+</button>
+          <button type="button" onClick={() => mapRef.current?.zoomOut()} className="rounded bg-background/90 px-2 py-1 text-sm shadow border border-border">−</button>
         </div>
       </div>
       {results.length > 0 && (
-        <ul className="max-h-48 overflow-auto rounded-lg border border-border bg-white text-sm shadow">
+        <ul className="max-h-48 overflow-auto rounded-lg border border-border bg-popover text-sm shadow">
           {results.map((r) => (
             <li key={r.place_id}>
               <button type="button" onClick={() => pick(r)} className="w-full px-3 py-2 text-left hover:bg-accent">

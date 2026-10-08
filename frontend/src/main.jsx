@@ -4,7 +4,7 @@ import { BrowserRouter } from 'react-router-dom'
 
 import { Toaster } from '@/components/ui/sonner'
 import { AuthProvider } from '@/lib/auth'
-import { applySettings } from '@/lib/settings'
+import { applySettings, getSettings } from '@/lib/settings'
 import './index.css'
 import App from './App.jsx'
 
@@ -15,7 +15,7 @@ createRoot(document.getElementById('root')).render(
     <BrowserRouter>
       <AuthProvider>
         <App />
-        <Toaster position="top-center" richColors theme="light" />
+        <Toaster position="top-center" richColors theme={getSettings().theme === 'dark' ? 'dark' : 'light'} />
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

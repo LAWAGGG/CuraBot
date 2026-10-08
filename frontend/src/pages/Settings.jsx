@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, Info, Monitor, Moon, Sun } from 'lucide-react'
+import { ExternalLink, Info, Moon, Sun } from 'lucide-react'
 
 import PageHeader from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
