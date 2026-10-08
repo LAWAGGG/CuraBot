@@ -159,7 +159,7 @@ export default function BotFiles() {
   return (
     <div className="space-y-6">
       <section className="rounded-xl border border-border bg-background p-5" aria-labelledby="upload-title">
-        <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="mb-4 flex items-center justify-between gap-3 flex-col md:flex-row">
           <div>
             <h2 id="upload-title" className="font-semibold">
               Unggah berkas katalog

@@ -42,16 +42,16 @@ export default function ShareDialog({ open, onOpenChange, name, link }) {
             <Link2 className="size-4 text-primary" aria-hidden="true" />
             Bagikan bot ke pelanggan
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-words">
             Kirim tautan ini atau minta pelanggan memindai kode QR untuk mulai mengobrol dengan bot
             Anda di Telegram.
           </DialogDescription>
         </DialogHeader>
-        <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
-          <span className="min-w-0 flex-1 truncate text-sm" title={link}>
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 sm:flex-row sm:items-center">
+          <span className="min-w-0 flex-1 break-all text-sm sm:truncate" title={link}>
             {link || '—'}
           </span>
-          <Button variant="outline" size="sm" onClick={copy} disabled={!link}>
+          <Button variant="outline" size="sm" className="self-end sm:self-auto" onClick={copy} disabled={!link}>
             <Copy aria-hidden="true" />
             Salin
           </Button>

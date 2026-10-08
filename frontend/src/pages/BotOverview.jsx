@@ -76,7 +76,7 @@ export default function BotOverview() {
     {
       done: fileCount > 0,
       icon: FileText,
-      title: 'Katalog produk',
+      title: 'Berkas Referensi',
       description:
         fileCount > 0
           ? `${fileCount} berkas terunggah`
@@ -91,7 +91,7 @@ export default function BotOverview() {
       description: bot.payment_info
         ? 'Instruksi pembayaran sudah diatur'
         : 'Tulis cara bayar agar bot bisa membimbing pelanggan',
-      to: 'pengaturan',
+      to: 'pengaturan#pembayaran',
       actionLabel: 'Atur',
     },
     {
@@ -101,7 +101,7 @@ export default function BotOverview() {
       description: bot.qris_image_url
         ? 'Gambar QRIS siap dikirim ke pelanggan'
         : 'Unggah QRIS agar bot bisa mengirimkannya saat diminta',
-      to: 'pengaturan',
+      to: 'pengaturan#qris',
       actionLabel: 'Unggah',
     },
   ]

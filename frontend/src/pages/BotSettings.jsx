@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react'
-import { useNavigate, useOutletContext } from 'react-router-dom'
+import { useEffect, useRef, useState } from 'react'
+import { useLocation, useNavigate, useOutletContext } from 'react-router-dom'
 import { AlertTriangle, ImagePlus, KeyRound, Loader2, Save } from 'lucide-react'
 import { toast } from 'sonner'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -25,7 +25,16 @@ const MAX_QRIS_SIZE = 25 * 1024 * 1024
 export default function BotSettings() {
   const { bot, refreshBot } = useOutletContext()
   const navigate = useNavigate()
+  const location = useLocation()
   const qrisInputRef = useRef(null)
+
+  useEffect(() => {
+    const id = location.hash.replace('#', '')
+    if (!id) return
+    requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [location.hash])
 
   const [name, setName] = useState(bot.name)
   const [systemPrompt, setSystemPrompt] = useState(bot.system_prompt)
@@ -179,35 +188,39 @@ export default function BotSettings() {
           </div>
         </section>
 
-        <section className="space-y-4 rounded-xl border border-border bg-background p-5">
+        <section id="pembayaran" className="scroll-mt-6 space-y-6 rounded-xl border border-border bg-background p-5">
           <h2 className="font-semibold">Pembayaran</h2>
+
           <div className="space-y-2">
-            <Label htmlFor="bot-payment">Info pembayaran (opsional)</Label>
+            <h3 className="text-sm font-medium">Instruksi pembayaran</h3>
             <Textarea
               id="bot-payment"
               rows={4}
+              aria-label="Info pembayaran"
               value={paymentInfo}
               onChange={(event) => setPaymentInfo(event.target.value)}
               placeholder="Contoh: Transfer BCA 1234567890 a.n. Toko Bu Sari. Setelah transfer, kirim bukti ya."
             />
             <p className="text-xs text-muted-foreground">
-              Bot akan menyampaikan instruksi ini persis seperti yang Anda tulis saat pelanggan
-              menanyakan cara bayar.
+              Bot menyampaikan instruksi ini persis seperti Anda tulis saat pelanggan menanyakan cara bayar.
             </p>
           </div>
 
-          <label className="flex items-center gap-2.5 text-sm">
-            <input
-              type="checkbox"
-              checked={cashEnabled}
-              onChange={(event) => setCashEnabled(event.target.checked)}
-              className="size-4 accent-primary"
-            />
-            Terima pembayaran tunai (cash) saat pesanan diterima
-          </label>
+          <div className="space-y-2 border-t border-border pt-5">
+            <h3 className="text-sm font-medium">Metode pembayaran</h3>
+            <label className="flex items-center gap-2.5 text-sm">
+              <input
+                type="checkbox"
+                checked={cashEnabled}
+                onChange={(event) => setCashEnabled(event.target.checked)}
+                className="size-4 accent-primary"
+              />
+              Terima pembayaran tunai (cash) saat pesanan diterima
+            </label>
+          </div>
 
-          <div className="space-y-3">
-            <Label>Gambar QRIS (opsional)</Label>
+          <div id="qris" className="scroll-mt-6 space-y-3 border-t border-border pt-5">
+            <h3 className="text-sm font-medium">Gambar QRIS (opsional)</h3>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
               {bot.qris_image_url ? (
                 <img

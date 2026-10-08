@@ -95,6 +95,43 @@
     --sidebar-ring: #5FBB97;
 }
 
+.dark {
+    --background: #0F1512;
+    --foreground: #E8EDE9;
+    --card: #16201B;
+    --card-foreground: #E8EDE9;
+    --popover: #16201B;
+    --popover-foreground: #E8EDE9;
+    --primary: #14B89C;
+    --primary-foreground: #06251F;
+    --secondary: #22302A;
+    --secondary-foreground: #E8EDE9;
+    --muted: #1B2620;
+    --muted-foreground: #9AAFA5;
+    --accent: #14352C;
+    --accent-foreground: #7FE0BF;
+    --destructive: #F87171;
+    --success: #34D399;
+    --warning: #FBBF24;
+    --info: #60A5FA;
+    --border: #26332C;
+    --input: #26332C;
+    --ring: #14B89C;
+    --chart-1: #14B89C;
+    --chart-2: #5FBB97;
+    --chart-3: #7FE0BF;
+    --chart-4: #34D399;
+    --chart-5: #14352C;
+    --sidebar: #121A15;
+    --sidebar-foreground: #E8EDE9;
+    --sidebar-primary: #14B89C;
+    --sidebar-primary-foreground: #06251F;
+    --sidebar-accent: #1B2620;
+    --sidebar-accent-foreground: #E8EDE9;
+    --sidebar-border: #22302A;
+    --sidebar-ring: #14B89C;
+}
+
 @utility card-soft {
     background-image: linear-gradient(180deg, #FFFFFF 0%, #F6F4F0 100%);
 }

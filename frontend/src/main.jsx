@@ -4,8 +4,11 @@ import { BrowserRouter } from 'react-router-dom'
 
 import { Toaster } from '@/components/ui/sonner'
 import { AuthProvider } from '@/lib/auth'
+import { applySettings } from '@/lib/settings'
 import './index.css'
 import App from './App.jsx'
+
+applySettings()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
