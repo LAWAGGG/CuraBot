@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import { FileSpreadsheet, FileText, Loader2, Pencil, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
@@ -37,6 +37,10 @@ export default function BotFiles() {
   const [progress, setProgress] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [deletingBusy, setDeletingBusy] = useState(false)
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkConfirm, setBulkConfirm] = useState(false)
+  const [bulkBusy, setBulkBusy] = useState(false)
   const [labels, setLabels] = useState({})
   const [editing, setEditing] = useState(null)
   const [editLabel, setEditLabel] = useState('')
@@ -70,6 +74,70 @@ export default function BotFiles() {
     setUploading(false)
     setProgress(null)
     if (failed === 0) toast.success('Semua berkas berhasil diunggah.')
+  }
+
+  const lpTimer = useRef(null)
+  const lpFired = useRef(false)
+  const enterSelectWith = (id) => {
+    setSelecting(true)
+    setSelected((prev) => new Set(prev).add(id))
+  }
+  const startLP = (id) => {
+    lpFired.current = false
+    lpTimer.current = setTimeout(() => {
+      lpFired.current = true
+      if (!selecting) enterSelectWith(id)
+      else toggleSelected(id)
+    }, 500)
+  }
+  const cancelLP = () => clearTimeout(lpTimer.current)
+
+  const toggleSelected = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const activeList = tab === 'docs' ? docs : images
+  const allActiveSelected = activeList.length > 0 && activeList.every((f) => selected.has(f.id))
+
+  const toggleSelectAll = () =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allActiveSelected) activeList.forEach((f) => next.delete(f.id))
+      else activeList.forEach((f) => next.add(f.id))
+      return next
+    })
+
+  const exitSelecting = () => {
+    setSelecting(false)
+    setSelected(new Set())
+  }
+
+  const confirmBulkDelete = async () => {
+    setBulkBusy(true)
+    try {
+      const result = await apiFetch(null, {
+        method: 'post',
+        url: '/api/files/bulk-delete',
+        data: { ids: [...selected] },
+      })
+      invalidate(filesKey)
+      await refresh()
+      toast.success(
+        result.failed > 0
+          ? `${result.deleted} berkas dihapus, ${result.failed} gagal.`
+          : `${result.deleted} berkas dihapus.`,
+      )
+      setBulkConfirm(false)
+      exitSelecting()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      setBulkBusy(false)
+    }
   }
 
   const confirmDelete = async () => {
@@ -170,7 +238,13 @@ export default function BotFiles() {
           <h2 id="files-title" className="font-semibold">
             Berkas terunggah
           </h2>
-          <div className="relative grid grid-cols-2 rounded-lg border border-border bg-muted p-0.5 text-xs" role="tablist">
+          <div className="flex items-center gap-2">
+            {files.length > 0 ? (
+              <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => (selecting ? exitSelecting() : setSelecting(true))}>
+                {selecting ? 'Batal' : 'Pilih'}
+              </Button>
+            ) : null}
+            <div className="relative grid grid-cols-2 rounded-lg border border-border bg-muted p-0.5 text-xs" role="tablist">
             <span
               aria-hidden="true"
               className="absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
@@ -188,8 +262,38 @@ export default function BotFiles() {
                 {t.label}
               </button>
             ))}
+            </div>
           </div>
         </div>
+
+        {selecting ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2">
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={allActiveSelected}
+                onChange={toggleSelectAll}
+              />
+              Pilih semua {tab === 'docs' ? 'berkas' : 'gambar'}
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{selected.size} terpilih</span>
+              <Button variant="ghost" size="sm" className="sm:hidden" onClick={exitSelecting}>
+                Batal
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={selected.size === 0}
+                onClick={() => setBulkConfirm(true)}
+              >
+                <Trash2 aria-hidden="true" />
+                Hapus ({selected.size})
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         {tab === 'docs' ? (loading && !data ? (
           <div className="space-y-2">
@@ -219,8 +323,27 @@ export default function BotFiles() {
                 <li
                   key={file.id}
                   style={{ animationDelay: `${index * 50}ms` }}
-                  className="rise flex items-center gap-3 rounded-xl border border-border bg-background px-4 py-3"
+                  onClick={() => {
+                    if (lpFired.current) { lpFired.current = false; return }
+                    if (selecting) toggleSelected(file.id)
+                  }}
+                  onPointerDown={() => startLP(file.id)}
+                  onPointerUp={cancelLP}
+                  onPointerLeave={cancelLP}
+                  onPointerCancel={cancelLP}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={`rise flex select-none items-center gap-3 rounded-xl border bg-background px-4 py-3 ${selecting ? 'cursor-pointer' : ''} ${selecting && selected.has(file.id) ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
                 >
+                  {selecting ? (
+                    <input
+                      type="checkbox"
+                      aria-label={`Pilih ${file.filename}`}
+                      className="size-5 shrink-0 rounded-md accent-primary"
+                      checked={selected.has(file.id)}
+                      onChange={() => toggleSelected(file.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : null}
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                     <Icon className="size-4.5" aria-hidden="true" />
                   </span>
@@ -232,23 +355,27 @@ export default function BotFiles() {
                       {formatBytes(file.file_size)} · {formatDateTime(file.created_at)}
                     </p>
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => { setEditing(file); setEditLabel(file.label ?? file.filename) }}
-                    aria-label="Edit label"
-                  >
-                    <Pencil aria-hidden="true" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={() => setDeleting(file)}
-                    aria-label={`Hapus ${file.filename}`}
-                  >
-                    <Trash2 aria-hidden="true" />
-                  </Button>
+                  {!selecting ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => { setEditing(file); setEditLabel(file.label ?? file.filename) }}
+                        aria-label="Edit label"
+                      >
+                        <Pencil aria-hidden="true" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                        onClick={() => setDeleting(file)}
+                        aria-label={`Hapus ${file.filename}`}
+                      >
+                        <Trash2 aria-hidden="true" />
+                      </Button>
+                    </>
+                  ) : null}
                 </li>
               )
             })}
@@ -261,10 +388,29 @@ export default function BotFiles() {
               <li key={file.id} style={{ animationDelay: `${index * 50}ms` }} className="rise">
                 <button
                   type="button"
-                  onClick={() => setViewing(file)}
-                  className="group block w-full overflow-hidden rounded-xl border border-border bg-background text-left"
-                  aria-label={`Lihat ${file.label ?? file.filename}`}
+                  onClick={() => {
+                    if (lpFired.current) { lpFired.current = false; return }
+                    if (selecting) toggleSelected(file.id)
+                    else setViewing(file)
+                  }}
+                  onPointerDown={() => startLP(file.id)}
+                  onPointerUp={cancelLP}
+                  onPointerLeave={cancelLP}
+                  onPointerCancel={cancelLP}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={`group relative block w-full select-none overflow-hidden rounded-xl border bg-background text-left ${selecting && selected.has(file.id) ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
+                  aria-label={selecting ? `Pilih ${file.label ?? file.filename}` : `Lihat ${file.label ?? file.filename}`}
                 >
+                  {selecting ? (
+                    <input
+                      type="checkbox"
+                      aria-label={`Pilih ${file.filename}`}
+                      className="absolute left-2 top-2 z-10 size-5 rounded-md accent-primary"
+                      checked={selected.has(file.id)}
+                      onChange={() => toggleSelected(file.id)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : null}
                   <img
                     src={file.media_url}
                     alt={file.label ?? file.filename}
@@ -280,6 +426,16 @@ export default function BotFiles() {
           </ul>
         ))}
       </section>
+
+      <ConfirmDialog
+        open={bulkConfirm}
+        onOpenChange={(open) => (!open ? setBulkConfirm(false) : null)}
+        title={`Hapus ${selected.size} berkas?`}
+        description="Bot tidak lagi memakai isi berkas ini sebagai sumber jawaban."
+        confirmLabel="Hapus Berkas"
+        onConfirm={confirmBulkDelete}
+        loading={bulkBusy}
+      />
 
       <ConfirmDialog
         open={Boolean(deleting)}

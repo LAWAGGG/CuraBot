@@ -59,3 +59,7 @@ class FileLabelIn(BaseModel):
         if not v:
             raise ValueError("label cannot be blank")
         return v
+
+
+class BulkIdsIn(BaseModel):
+    ids: List[int] = Field(min_length=1, max_length=200)

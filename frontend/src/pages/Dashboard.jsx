@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   ExternalLink,
@@ -34,11 +34,72 @@ const BOTS_KEY = 'bots'
 export default function Dashboard() {
   const [deleting, setDeleting] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [selecting, setSelecting] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkConfirm, setBulkConfirm] = useState(false)
 
   const { data, loading, error, refresh } = useApi(BOTS_KEY, () =>
     apiFetch(BOTS_KEY, { url: '/api/bots/list' }),
   )
   const bots = data?.bots ?? []
+
+  const lpTimer = useRef(null)
+  const lpFired = useRef(false)
+  const enterSelectWith = (id) => {
+    setSelecting(true)
+    setSelected((prev) => new Set(prev).add(id))
+  }
+  const startLP = (id) => {
+    lpFired.current = false
+    lpTimer.current = setTimeout(() => {
+      lpFired.current = true
+      if (!selecting) enterSelectWith(id)
+      else toggleSelected(id)
+    }, 500)
+  }
+  const cancelLP = () => clearTimeout(lpTimer.current)
+
+  const toggleSelected = (id) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const allSelected = bots.length > 0 && bots.every((b) => selected.has(b.id))
+
+  const toggleSelectAll = () =>
+    setSelected(allSelected ? new Set() : new Set(bots.map((b) => b.id)))
+
+  const exitSelecting = () => {
+    setSelecting(false)
+    setSelected(new Set())
+  }
+
+  const confirmBulkDelete = async () => {
+    setBusy(true)
+    try {
+      const result = await apiFetch(null, {
+        method: 'post',
+        url: '/api/bots/bulk-delete',
+        data: { ids: [...selected] },
+      })
+      invalidate(BOTS_KEY)
+      await refresh()
+      toast.success(
+        result.failed > 0
+          ? `${result.deleted} bot dihapus, ${result.failed} gagal.`
+          : `${result.deleted} bot dihapus.`,
+      )
+      setBulkConfirm(false)
+      exitSelecting()
+    } catch (caught) {
+      toast.error(errorMessage(caught))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const confirmDelete = async () => {
     if (!deleting) return
@@ -62,14 +123,40 @@ export default function Dashboard() {
         title="Bot Saya"
         description="Kelola bot layanan pelanggan Telegram Anda."
         actions={
-          <Button asChild size="lg">
-            <Link to="/bots/new">
-              <Plus aria-hidden="true" />
-              Buat Bot Baru
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            {bots.length > 0 ? (
+              <Button variant="outline" size="lg" className="hidden sm:inline-flex" onClick={() => (selecting ? exitSelecting() : setSelecting(true))}>
+                {selecting ? 'Batal' : 'Pilih'}
+              </Button>
+            ) : null}
+            <Button asChild size="lg">
+              <Link to="/bots/new">
+                <Plus aria-hidden="true" />
+                Buat Bot Baru
+              </Link>
+            </Button>
+          </div>
         }
       />
+
+      {selecting ? (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2">
+          <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <input type="checkbox" className="size-4 accent-primary" checked={allSelected} onChange={toggleSelectAll} />
+            Pilih semua
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{selected.size} terpilih</span>
+            <Button variant="ghost" size="sm" className="sm:hidden" onClick={exitSelecting}>
+              Batal
+            </Button>
+            <Button variant="destructive" size="sm" disabled={selected.size === 0} onClick={() => setBulkConfirm(true)}>
+              <Trash2 aria-hidden="true" />
+              Hapus ({selected.size})
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       {loading && !data ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -106,20 +193,40 @@ export default function Dashboard() {
             <Card
               key={bot.id}
               style={{ animationDelay: `${index * 60}ms` }}
-              className="rise group relative overflow-hidden border-border/80 p-0 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg"
+              onClick={selecting
+                ? () => { if (lpFired.current) { lpFired.current = false; return } toggleSelected(bot.id) }
+                : () => { if (lpFired.current) { lpFired.current = false; return } }
+              }
+              onPointerDown={() => startLP(bot.id)}
+              onPointerUp={cancelLP}
+              onPointerLeave={cancelLP}
+              onPointerCancel={cancelLP}
+              onContextMenu={(e) => e.preventDefault()}
+              className={`rise group relative select-none overflow-hidden p-0 shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg ${selecting ? 'cursor-pointer' : ''} ${selecting && selected.has(bot.id) ? 'border-primary ring-1 ring-primary' : 'border-border/80'}`}
             >
+              {selecting ? (
+                <input
+                  type="checkbox"
+                  aria-label={`Pilih ${bot.name}`}
+                  className="absolute left-3 top-3 z-10 size-5 rounded-md accent-primary"
+                  checked={selected.has(bot.id)}
+                  onChange={() => toggleSelected(bot.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : null}
               <div className="relative h-24 overflow-hidden bg-[radial-gradient(circle_at_20%_20%,rgba(14,159,138,0.25),transparent_55%),radial-gradient(circle_at_80%_10%,rgba(59,130,246,0.2),transparent_50%),radial-gradient(circle_at_70%_90%,rgba(163,230,53,0.18),transparent_55%)]">
                 <BannerWord word={bot.name.trim().split(/\s+/).pop()} />
                 <div className="absolute top-3 right-3">
                   <StatusBadge status={bot.status} />
                 </div>
               </div>
-              <div className="flex items-start justify-between gap-3 px-5 pt-7 pb-5">
+              <div className="flex items-start justify-between gap-3 px-5 py-7">
                 <div className="min-w-0">
                   <h2 className="truncate text-lg font-bold tracking-tight text-foreground">
                     <Link
                       to={`/bots/${bot.id}`}
-                      className="outline-none after:absolute after:inset-0 focus-visible:underline"
+                      onClick={selecting ? (e) => e.preventDefault() : undefined}
+                      className={`outline-none focus-visible:underline ${selecting ? '' : 'after:absolute after:inset-0'}`}
                     >
                       {bot.name}
                     </Link>
@@ -162,6 +269,16 @@ export default function Dashboard() {
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={bulkConfirm}
+        onOpenChange={(open) => (!open ? setBulkConfirm(false) : null)}
+        title={`Hapus ${selected.size} bot?`}
+        description="Bot akan dinonaktifkan dan tidak bisa dipakai lagi oleh pelanggan. Tindakan ini tidak bisa dibatalkan."
+        confirmLabel="Hapus Bot"
+        onConfirm={confirmBulkDelete}
+        loading={busy}
+      />
 
       <ConfirmDialog
         open={Boolean(deleting)}

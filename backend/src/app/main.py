@@ -320,6 +320,16 @@ def list_files(bot_id: int, user_id: int = Depends(security.get_current_user),
     } for r in rows]}
 
 
+@app.post("/api/bots/bulk-delete")
+def bulk_delete_bots(payload: schemas.BulkIdsIn, user_id: int = Depends(security.get_current_user),
+                     db: Session = Depends(get_db)):
+    rows = db.query(Bot).filter(Bot.id.in_(payload.ids), Bot.user_id == user_id).all()
+    for bot in rows:
+        bot.status = "inactive"
+    db.commit()
+    return {"deleted": len(rows), "failed": len(payload.ids) - len(rows)}
+
+
 @app.delete("/api/files/{file_id}")
 def delete_file(file_id: int, user_id: int = Depends(security.get_current_user),
                 db: Session = Depends(get_db)):
@@ -336,6 +346,23 @@ def delete_file(file_id: int, user_id: int = Depends(security.get_current_user),
     db.delete(row)
     db.commit()
     return {"ok": True}
+
+
+@app.post("/api/files/bulk-delete")
+def bulk_delete_files(payload: schemas.BulkIdsIn, user_id: int = Depends(security.get_current_user),
+                      db: Session = Depends(get_db)):
+    rows = (db.query(UploadedFile).join(Bot, Bot.id == UploadedFile.bot_id)
+            .filter(UploadedFile.id.in_(payload.ids), Bot.user_id == user_id).all())
+    for row in rows:
+        try:
+            resolved = config.resolve_upload_path(row.file_path)
+            if resolved:
+                os.remove(resolved)
+        except OSError:
+            pass
+        db.delete(row)
+    db.commit()
+    return {"deleted": len(rows), "failed": len(payload.ids) - len(rows)}
 
 
 @app.patch("/api/files/{file_id}")
