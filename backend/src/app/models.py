@@ -87,9 +87,23 @@ class ExtractedOrder(Base):
     )
     rejection_reason = Column(Text)
     payment_proof_path = Column(String(500))
+    stock_deducted = Column(Boolean, nullable=False, default=False, server_default="0")
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     bot = relationship("Bot", back_populates="orders")
+
+
+class BotExternalSource(Base):
+    __tablename__ = "bot_external_sources"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    kind = Column(Enum("sheet", "drive_folder"), nullable=False)
+    url = Column(String(2000), nullable=False)
+    external_id = Column(String(255), nullable=False)
+    tab = Column(String(255), nullable=True)
+    mapping = Column(JSON, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class BotChat(Base):

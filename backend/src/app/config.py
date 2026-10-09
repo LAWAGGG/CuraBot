@@ -66,3 +66,23 @@ GEMINI_FALLBACK = os.getenv("GEMINI_FALLBACK", "gemini-3.5-flash-lite")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_BOT_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "")
+
+import glob as _glob
+_found = sorted(_glob.glob(os.path.join(_BASE_DIR, "curabot-*.json")))
+GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", _found[0] if _found else "")
+GOOGLE_SHEET_TTL = int(os.getenv("GOOGLE_SHEET_TTL", "300"))
+GOOGLE_DRIVE_TTL = int(os.getenv("GOOGLE_DRIVE_TTL", "600"))
+
+
+def google_client_email() -> str:
+    try:
+        import json as _json
+        if GOOGLE_CREDENTIALS_PATH and os.path.isfile(GOOGLE_CREDENTIALS_PATH):
+            with open(GOOGLE_CREDENTIALS_PATH) as _f:
+                return _json.load(_f).get("client_email", "")
+    except Exception:
+        pass
+    return ""
+
+
+GOOGLE_CLIENT_EMAIL = os.getenv("GOOGLE_CLIENT_EMAIL", "") or google_client_email()

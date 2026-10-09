@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 
 import ConfirmDialog from '@/components/ConfirmDialog'
 import EmptyState from '@/components/EmptyState'
+import GoogleSources from '@/components/GoogleSources'
 import UploadDropzone from '@/components/UploadDropzone'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
@@ -100,7 +101,7 @@ export default function BotFiles() {
       return next
     })
 
-  const activeList = tab === 'docs' ? docs : images
+  const activeList = tab === 'docs' ? docs : tab === 'images' ? images : []
   const allActiveSelected = activeList.length > 0 && activeList.every((f) => selected.has(f.id))
 
   const toggleSelectAll = () =>
@@ -158,6 +159,7 @@ export default function BotFiles() {
 
   return (
     <div className="space-y-6">
+      {tab !== 'links' ? (
       <section className="rounded-xl border border-border bg-background p-5" aria-labelledby="upload-title">
         <div className="mb-4 flex items-center justify-between gap-3 flex-col md:flex-row">
           <div>
@@ -232,25 +234,32 @@ export default function BotFiles() {
           </>
         )}
       </section>
+      ) : (<GoogleSources bot={bot} mode="input" />)}
 
       <section aria-labelledby="files-title">
         <div className="mb-3 flex items-center justify-between gap-3">
+          {tab !== 'links' ? (
           <h2 id="files-title" className="font-semibold">
             Berkas terunggah
           </h2>
+          ) : (
+          <h2 id="files-title" className="font-semibold">
+            Link terhubung
+          </h2>
+          )}
           <div className="flex items-center gap-2">
-            {files.length > 0 ? (
+            {files.length > 0 && tab !== 'links' ? (
               <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => (selecting ? exitSelecting() : setSelecting(true))}>
                 {selecting ? 'Batal' : 'Pilih'}
               </Button>
             ) : null}
-            <div className="relative grid grid-cols-2 rounded-lg border border-border bg-muted p-0.5 text-xs" role="tablist">
+            <div className="relative grid grid-cols-3 rounded-lg border border-border bg-muted p-0.5 text-xs" role="tablist">
             <span
               aria-hidden="true"
-              className="absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
-              style={{ transform: tab === 'images' ? 'translateX(100%)' : 'translateX(0)' }}
+              className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/3)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
+              style={{ transform: tab === 'images' ? 'translateX(100%)' : tab === 'links' ? 'translateX(200%)' : 'translateX(0)' }}
             />
-            {[{ id: 'docs', label: `Berkas (${docCount})` }, { id: 'images', label: `Gambar (${imageCount})` }].map((t) => (
+            {[{ id: 'docs', label: `Berkas (${docCount})` }, { id: 'images', label: `Gambar (${imageCount})` }, { id: 'links', label: 'Link' }].map((t) => (
               <button
                 key={t.id}
                 type="button"
@@ -266,7 +275,7 @@ export default function BotFiles() {
           </div>
         </div>
 
-        {selecting ? (
+        {selecting && tab !== 'links' ? (
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/50 px-3 py-2">
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
@@ -295,7 +304,7 @@ export default function BotFiles() {
           </div>
         ) : null}
 
-        {tab === 'docs' ? (loading && !data ? (
+        {tab === 'links' ? (<GoogleSources bot={bot} mode="list" />) : tab === 'docs' ? (loading && !data ? (
           <div className="space-y-2">
             <Skeleton className="h-14 rounded-lg" />
             <Skeleton className="h-14 rounded-lg" />

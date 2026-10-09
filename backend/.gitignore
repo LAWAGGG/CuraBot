@@ -2,6 +2,7 @@
 .venv/
 __pycache__/
 *.pyc
+curabot-5*
 uploads/
 *.egg-info/
 .pytest_cache/

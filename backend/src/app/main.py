@@ -23,9 +23,9 @@ from pypdf import PdfReader
 from docx import Document
 from openpyxl import load_workbook
 
-from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers, payment
+from . import config, security, schemas, telegram_api, gemini_service, excel_service, location_service, image_markers, payment, google_service as gsvc
 from .database import get_db, SessionLocal
-from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead
+from .models import User, Bot, UploadedFile, Message, ExtractedOrder, BotChat, ConversationRead, BotExternalSource
 
 app = FastAPI(title="CuraBot API")
 os.makedirs(config.UPLOAD_DIR, exist_ok=True)
@@ -377,6 +377,115 @@ def update_file_label(file_id: int, payload: schemas.FileLabelIn,
     return {"ok": True, "label": row.label}
 
 
+# ---------- GOOGLE SOURCES ----------
+
+def source_to_dict(s: BotExternalSource) -> dict:
+    return {"id": s.id, "bot_id": s.bot_id, "kind": s.kind, "url": s.url,
+            "external_id": s.external_id, "tab": s.tab, "mapping": s.mapping,
+            "last_error": s.last_error, "created_at": str(s.created_at)}
+
+
+@app.get("/api/bots/{bot_id}/google-identity")
+def google_identity(bot_id: int, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    return {"client_email": config.GOOGLE_CLIENT_EMAIL, "configured": bool(config.GOOGLE_CREDENTIALS_PATH)}
+
+
+@app.post("/api/bots/{bot_id}/sources", status_code=201)
+def create_source(bot_id: int, body: schemas.SourceCreateIn, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    try:
+        ext_id = gsvc.parse_google_id(body.kind, body.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    dup = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == body.kind, BotExternalSource.external_id == ext_id).first()
+    if dup:
+        raise HTTPException(409, "Link ini sudah terhubung")
+    row = BotExternalSource(bot_id=bot_id, kind=body.kind, url=body.url.strip()[:2000], external_id=ext_id, tab=(body.tab or "").strip() or None)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    try:
+        if body.kind == "sheet":
+            _h, _r, m = gsvc.read_sheet_rows(row)
+            row.mapping = {k: v for k, v in m.items() if v is not None}
+        else:
+            gsvc.list_drive_images(row)
+        row.last_error = None
+    except Exception as e:
+        row.last_error = gsvc._safe_err(e)
+    db.commit()
+    db.refresh(row)
+    if row.last_error:
+        raise HTTPException(502, f"Terhubung tapi verifikasi gagal: {row.last_error}. Pastikan share ke {config.GOOGLE_CLIENT_EMAIL}")
+    return source_to_dict(row)
+
+
+@app.get("/api/bots/{bot_id}/sources")
+def list_sources(bot_id: int, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    rows = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id).order_by(desc(BotExternalSource.created_at)).all()
+    return {"sources": [source_to_dict(r) for r in rows], "client_email": config.GOOGLE_CLIENT_EMAIL}
+
+
+@app.patch("/api/bots/{bot_id}/sources/{source_id}")
+def patch_source(bot_id: int, source_id: int, body: schemas.SourceMappingIn, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    row = db.query(BotExternalSource).filter(BotExternalSource.id == source_id, BotExternalSource.bot_id == bot_id).first()
+    if not row:
+        raise HTTPException(404, "Source not found")
+    if body.tab is not None:
+        row.tab = body.tab.strip() or None
+    m = dict(row.mapping or {})
+    for k in ("name_col", "price_col", "stock_col", "image_col"):
+        v = getattr(body, k)
+        if v is not None:
+            m[k] = v
+    row.mapping = m
+    gsvc._sheet_cache.pop(bot_id, None)
+    db.commit()
+    return source_to_dict(row)
+
+
+@app.delete("/api/bots/{bot_id}/sources/{source_id}")
+def delete_source(bot_id: int, source_id: int, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    row = db.query(BotExternalSource).filter(BotExternalSource.id == source_id, BotExternalSource.bot_id == bot_id).first()
+    if not row:
+        raise HTTPException(404, "Source not found")
+    db.delete(row)
+    db.commit()
+    gsvc._sheet_cache.pop(bot_id, None)
+    gsvc._drive_cache.pop(source_id, None)
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/sources/{source_id}/sync")
+def sync_source(bot_id: int, source_id: int, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    row = db.query(BotExternalSource).filter(BotExternalSource.id == source_id, BotExternalSource.bot_id == bot_id).first()
+    if not row:
+        raise HTTPException(404, "Source not found")
+    try:
+        if row.kind == "sheet":
+            headers, rows, m = gsvc.read_sheet_rows(row)
+            row.mapping = {k: v for k, v in m.items() if v is not None}
+            row.last_error = None
+            gsvc._sheet_cache.pop(bot_id, None)
+            db.commit()
+            nc = m.get("name_col")
+            preview = [r[nc] if nc is not None and nc < len(r) else "" for r in rows[:5]]
+            return {"ok": True, "headers": headers, "mapping": row.mapping, "preview": preview, "total_rows": len(rows)}
+        items = gsvc.list_drive_images(row)
+        row.last_error = None
+        db.commit()
+        return {"ok": True, "preview": [i["name"] for i in items[:5]], "total_rows": len(items)}
+    except Exception as e:
+        row.last_error = gsvc._safe_err(e)
+        db.commit()
+        raise HTTPException(502, f"Sync gagal: {row.last_error}. Pastikan share ke {config.GOOGLE_CLIENT_EMAIL}")
+
+
 # ---------- MESSAGES ----------
 
 @app.get("/api/messages/{bot_id}")
@@ -695,8 +804,22 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
                                             ExtractedOrder.bot_id == bot_id).first()
     if not order:
         raise HTTPException(404, "Order not found")
+    prev = order.status
     order.status = body.status
     order.rejection_reason = body.reason if body.status == "rejected" else None
+    if body.status == "rejected" and prev != "rejected" and order.stock_deducted:
+        try:
+            sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
+            for _p in (order.products or []):
+                for _s in sheets:
+                    try:
+                        if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), int(_p.get("quantity", 0) or 0)):
+                            break
+                    except Exception:
+                        continue
+            order.stock_deducted = False
+        except Exception:
+            pass
     db.commit()
 
     # webhook ke customer: kabari perubahan status order
@@ -1089,6 +1212,12 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     files = (db.query(UploadedFile)
              .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
     file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)
+    try:
+        gctx = gsvc.sheet_context(bot.id, db)
+        if gctx:
+            file_context = (file_context + "\n\n" + gctx)[:15000]
+    except Exception:
+        pass
 
     # status order terakhir untuk konteks jawaban AI
     latest_order = (db.query(ExtractedOrder)
@@ -1223,6 +1352,38 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             p = config.resolve_upload_path(row.file_path)
             if p and os.path.exists(p):
                 paths.append(p)
+    if wanted:
+        have = set(os.path.basename(p) for p in paths)
+        missing = [w for w in wanted if w not in have]
+        if missing:
+            try:
+                dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
+                for ds in dsources:
+                    try:
+                        items = gsvc.list_drive_images(ds)
+                        names = [i["name"] for i in items]
+                        for w in list(missing):
+                            hit = gsvc.fuzzy_find(w, names)
+                            if not hit:
+                                continue
+                            fid = next(i["id"] for i in items if i["name"] == hit)
+                            data = gsvc.download_drive_image(fid)
+                            tmp = f"/tmp/curabot-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
+                            with open(tmp, "wb") as _f:
+                                _f.write(data)
+                            try:
+                                telegram_api.send_photo(token, chat_id, tmp)
+                                paths.append(tmp)
+                            finally:
+                                try:
+                                    os.remove(tmp)
+                                except OSError:
+                                    pass
+                            missing.remove(w)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
     try:
         # ponytail: kirim semua; Telegram maks 10 foto per album, jadi pecah per 10
         for i in range(0, len(paths), 10):
@@ -1316,6 +1477,19 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         saved_order = new_order
         try:
             excel_service.append_order(bot_id, order, uid, status)
+        except Exception:
+            pass
+        try:
+            sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
+            for _p in (saved_order.products or []):
+                for _s in sheets:
+                    try:
+                        if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), -int(_p.get("quantity", 0) or 0)):
+                            break
+                    except Exception:
+                        continue
+            saved_order.stock_deducted = True
+            db.commit()
         except Exception:
             pass
 

@@ -68,6 +68,9 @@ const MESSAGE_MAP = [
   [/only jpg\/png allowed/i, 'Hanya gambar JPG/PNG yang diizinkan.'],
   [/no orders exported yet/i, 'Belum ada ekspor pesanan untuk bot ini.'],
   [/system_prompt must be at least/i, 'Instruksi sistem minimal 10 karakter.'],
+  [/link ini sudah terhubung/i, 'Link ini sudah terhubung.'],
+  [/hanya link docs\.google\.com.*/i, 'Hanya link docs.google.com / drive.google.com.'],
+  [/sync gagal.*/i, 'Sinkronisasi Google gagal. Cek share akses.'],
 ]
 
 function mapDetail(detail) {

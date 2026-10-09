@@ -63,3 +63,17 @@ class FileLabelIn(BaseModel):
 
 class BulkIdsIn(BaseModel):
     ids: List[int] = Field(min_length=1, max_length=200)
+
+
+class SourceCreateIn(BaseModel):
+    kind: str = Field(pattern="^(sheet|drive_folder)$")
+    url: str = Field(min_length=10, max_length=2000)
+    tab: Optional[str] = Field(default=None, max_length=255)
+
+
+class SourceMappingIn(BaseModel):
+    name_col: Optional[int] = Field(default=None, ge=0, le=100)
+    price_col: Optional[int] = Field(default=None, ge=0, le=100)
+    stock_col: Optional[int] = Field(default=None, ge=0, le=100)
+    image_col: Optional[int] = Field(default=None, ge=0, le=100)
+    tab: Optional[str] = Field(default=None, max_length=255)
