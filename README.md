@@ -105,9 +105,4 @@ Auth: header `Authorization: Bearer <token>`, kecuali register, login, webhook, 
 | `GET` | `/api/bots/{id}/analytics` | Data analitik |
 | `POST` | `/api/telegram/webhook` | Webhook Telegram (internal) |
 
-Referensi lengkap: `http://localhost:8000/docs` dan `postman/CuraBot.postman_collection.json`. Troubleshooting (webhook sepi, 401, upload ditolak, CORS): lihat README backend/frontend.
-
-## Lisensi & Kontribusi
-
-- Lisensi: belum ada file `LICENSE`. Tambahkan satu (misal MIT) sebelum dipublikasikan.
-- Kontribusi: fork → branch (`feat/...` / `fix/...`) → pastikan `uv run pytest -q` (backend) dan `npm run lint` + `npm run build` (frontend) lolos → Pull Request dengan deskripsi perubahan.
+Referensi lengkap: `http://localhost:8000/docs`. Troubleshooting (webhook sepi, 401, upload ditolak, CORS): lihat README backend/frontend.
