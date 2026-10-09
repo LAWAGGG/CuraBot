@@ -1,7 +1,7 @@
 import { Suspense, createContext, useContext, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Bot, ChevronDown, LayoutGrid, LogOut, Menu, Moon, PlusCircle, Settings, Sun } from 'lucide-react'
+import { Bot, LayoutGrid, LogOut, Menu, Moon, PlusCircle, Settings, Sun } from 'lucide-react'
 import CuraBotLogo from '@/components/CuraBotLogo'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
@@ -41,9 +41,9 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
       onClick={onNavigate}
       className={({ isActive }) =>
         cn(
-          'relative flex items-center gap-3 rounded-xl px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-          indent ? 'min-h-9 rounded-lg text-muted-foreground' : 'min-h-11',
-          isActive && 'text-foreground',
+          'group relative flex items-center gap-3 rounded-xl px-3 text-sm font-medium text-muted-foreground transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-sm hover:ring-1 hover:ring-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          indent ? 'min-h-9 rounded-lg' : 'min-h-11',
+          isActive && 'text-sidebar-accent-foreground',
         )
       }
     >
@@ -52,11 +52,19 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
           {isActive ? (
             <motion.span
               layoutId={pillId}
-              className="absolute inset-0 rounded-xl bg-card shadow-sm ring-1 ring-border"
+              className="absolute inset-0 rounded-xl bg-sidebar-accent shadow-sm ring-1 ring-border"
               transition={{ type: 'spring', stiffness: 420, damping: 34 }}
             />
           ) : null}
-          {Icon ? <Icon className="relative size-5" aria-hidden="true" /> : null}
+          {Icon ? (
+            <Icon
+              className={cn(
+                'relative size-5 transition-colors',
+                isActive ? 'text-primary' : 'group-hover:text-primary',
+              )}
+              aria-hidden="true"
+            />
+          ) : null}
           <span className="relative">{label}</span>
         </>
       )}
