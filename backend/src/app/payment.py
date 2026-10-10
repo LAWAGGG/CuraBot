@@ -1,6 +1,8 @@
 # backend/src/app/payment.py
 """Metode pembayaran: deteksi, inline keyboard, teks deterministik."""
 
+import re
+
 CASH_TEXT = ("Pembayaran tunai (cash): bayar langsung ke penjual atau kurir "
              "saat pesanan diterima ya.")
 
@@ -40,10 +42,41 @@ def payment_keyboard(bot) -> dict | None:
     return {"inline_keyboard": rows} if rows else None
 
 
+_ONSITE_WORDS = ("makan di tempat", "makan ditempat", "dine in", "dine-in",
+                  "ambil di toko", "diambil di toko", "pickup", "pick up", "onsite")
+_DELIVERY_WORDS = ("diantar", "pengiriman", "dikirim", "delivery", "online",
+                   "ojek", "gojek", "grab", "kurir", "gosend")
+_DELIVERY_HINTS = _DELIVERY_WORDS + ("antar", "kirim", "jne", "jnt", "pos", "paxel", "alamat", "rumah")
+
+
+def service_options(knowledge: str) -> tuple:
+    """-> (onsite, delivery). Tak jelas -> anggap keduanya ada."""
+    kl = (knowledge or "").lower()
+    onsite = any(w in kl for w in _ONSITE_WORDS)
+    delivery = any(w in kl for w in _DELIVERY_WORDS)
+    if not onsite and not delivery:
+        return True, True
+    return onsite, delivery
+
+
+def mentions_delivery(text: str) -> bool:
+    return any(w in (text or "").lower() for w in _DELIVERY_HINTS)
+
+
+_QUESTION_START = ("apa", "berapa", "bagaimana", "gimana", "kapan", "dimana",
+                   "di mana", "apakah", "adakah", "bisakah", "kenapa", "mengapa")
+
+
+def user_asked_question(text: str) -> bool:
+    lowered = (text or "").lower().strip()
+    return "?" in lowered or lowered.startswith(_QUESTION_START)
+
+
 def order_data_complete(order) -> bool:
     if not order:
         return False
-    return bool(order.customer_name and order.customer_phone
+    # ponytail: nama opsional (tak ditanya di alur slot) — HP + produk + total + alamat cukup
+    return bool(order.customer_phone
                 and (order.products or []) and order.total_price is not None
                 and (order.delivery_address or "").strip())
 
@@ -73,3 +106,45 @@ def callback_response(bot, data: str) -> tuple:
     if method == "rekening" and (bot.payment_info or "").strip():
         return "text", bot.payment_info.strip() + "\n\n" + PROOF_ASK
     return "text", NO_INFO_TEXT
+
+
+# --- pembatalan pesanan oleh customer (2 langkah: niat -> konfirmasi -> eksekusi) ---
+# kalimat kunci konfirmasi; AI wajib menuliskannya persis agar backend mengenalinya
+CANCEL_MARK = "mau dibatalkan"
+CANCEL_ASK = "Apakah pesanan ini benar mau dibatalkan, Kak?"
+
+_WHOLE_CANCEL_RE = re.compile(r"\b(gak|ga|nggak|enggak|tidak|tak|tdk)\s+jadi\b")
+
+_CANCEL_AFFIRM = {"ya", "iya", "iy", "betul", "benar", "bener", "oke", "ok",
+                  "okay", "jadi", "setuju", "baik", "sip", "deal", "yup",
+                  "yep", "mau", "boleh", "lanjut", "yaudah"}
+_CANCEL_NEG = {"nggak", "enggak", "tidak", "gak", "ga", "tak", "tida", "ogah"}
+
+
+def is_cancel_intent(text: str) -> bool:
+    """Niat membatalkan SELURUH pesanan? Salah-positif (batal 1 item) ditampung
+    langkah konfirmasi, jadi bias ke True."""
+    lowered = (text or "").lower()
+    if "batal" in lowered or "cancel" in lowered:
+        return True
+    return bool(_WHOLE_CANCEL_RE.search(lowered))
+
+
+def classify_cancel_reply(text: str) -> str:
+    """Jawaban atas pertanyaan konfirmasi pembatalan -> 'confirm' | 'abort' | 'none'."""
+    lowered = (text or "").lower()
+    tokens = re.findall(r"[a-z]+", lowered)
+    if not tokens:
+        return "none"
+    if "jangan" in tokens:
+        return "abort"
+    if "batal" in lowered or "cancel" in lowered:
+        return "confirm"
+    if all(t in _CANCEL_AFFIRM for t in tokens) and len(tokens) <= 6:
+        return "confirm"
+    if "jadi" in tokens and any(t in _CANCEL_NEG for t in tokens):
+        # "gak jadi" di konteks ini = menegaskan batal (bukan menunda)
+        return "confirm"
+    if any(t in _CANCEL_NEG for t in tokens):
+        return "abort"
+    return "none"

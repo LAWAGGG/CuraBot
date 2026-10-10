@@ -47,7 +47,7 @@ def _geocode(query: str) -> str | None:
 
 
 def enrich_with_maps(text: str, coords: str | None = None) -> str:
-    """Ubah marker [[LOC: nama tempat]] jadi link Google Maps berkoordinat presisi."""
+    """Ubah marker [[LOC: alamat]] jadi SATU blok lokasi baku (anti duplikat)."""
     if "[[LOC:" not in text:
         return text
     count = 0
@@ -61,6 +61,8 @@ def enrich_with_maps(text: str, coords: str | None = None) -> str:
             return query
         # ponytail: coords dari picker = lokasi toko hasil tap/search user, presisi; skip re-geocode nama
         url = direct_url or _geocode(query)
-        return f"📍 {query}: {url}" if url else query
+        if not url:
+            return query
+        return f"📍Lokasi:\n{query}\nMaps: {url}"
 
     return _MARKER.sub(_repl, text).strip()

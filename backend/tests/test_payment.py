@@ -123,5 +123,64 @@ class CallbackResponseTest(unittest.TestCase):
         assert kind == "text" and text == payment.NO_INFO_TEXT
 
 
+class SlotHelperTest(unittest.TestCase):
+    def test_service_options(self):
+        assert payment.service_options("makan di tempat dan pengiriman online") == (True, True)
+        assert payment.service_options("hanya ambil di toko") == (True, False)
+        assert payment.service_options("kami hanya delivery online") == (False, True)
+        assert payment.service_options("toko kue enak") == (True, True)
+
+    def test_mentions_delivery(self):
+        assert payment.mentions_delivery("pakai JNE ke rumah") is True
+        assert payment.mentions_delivery("dikirim online ya") is True
+        assert payment.mentions_delivery("ambil di toko") is False
+
+    def test_user_asked_question(self):
+        assert payment.user_asked_question("Harganya berapa?") is True
+        assert payment.user_asked_question("berapa harganya") is True
+        assert payment.user_asked_question("ambil di toko") is False
+        assert payment.user_asked_question("iya sudah") is False
+
+
+class CancelIntentTest(unittest.TestCase):
+    def test_batal_words(self):
+        assert payment.is_cancel_intent("batalkan pesanan saya") is True
+        assert payment.is_cancel_intent("BATAL") is True
+        assert payment.is_cancel_intent("cancel order please") is True
+        assert payment.is_cancel_intent("mohon dibatalkan ya") is True
+
+    def test_jadi_phrases(self):
+        assert payment.is_cancel_intent("gak jadi deh") is True
+        assert payment.is_cancel_intent("tidak jadi pesan") is True
+
+    def test_non_cancel(self):
+        assert payment.is_cancel_intent("pesan 2 kue coklat ya") is False
+        assert payment.is_cancel_intent("tambah es teh satu") is False
+        assert payment.is_cancel_intent("") is False
+
+
+class ClassifyCancelReplyTest(unittest.TestCase):
+    def test_confirm(self):
+        assert payment.classify_cancel_reply("ya") == "confirm"
+        assert payment.classify_cancel_reply("Iya betul") == "confirm"
+        assert payment.classify_cancel_reply("ya, batalkan saja") == "confirm"
+        assert payment.classify_cancel_reply("gak jadi") == "confirm"
+        assert payment.classify_cancel_reply("cancel aja") == "confirm"
+
+    def test_abort(self):
+        assert payment.classify_cancel_reply("jangan") == "abort"
+        assert payment.classify_cancel_reply("jangan batal") == "abort"
+        assert payment.classify_cancel_reply("nggak") == "abort"
+        assert payment.classify_cancel_reply("tidak") == "abort"
+
+    def test_none(self):
+        assert payment.classify_cancel_reply("ya, tambah es teh") == "none"
+        assert payment.classify_cancel_reply("jam berapa buka?") == "none"
+        assert payment.classify_cancel_reply("") == "none"
+
+    def test_jangan_wins_over_batal(self):
+        assert payment.classify_cancel_reply("jangan dibatalkan") == "abort"
+
+
 if __name__ == "__main__":
     unittest.main()
