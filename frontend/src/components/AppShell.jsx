@@ -43,7 +43,7 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
         cn(
           'group relative flex items-center gap-3 rounded-xl px-3 text-sm font-medium text-muted-foreground transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-sm hover:ring-1 hover:ring-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           indent ? 'min-h-9 rounded-lg' : 'min-h-11',
-          isActive && 'text-sidebar-accent-foreground',
+          isActive && 'text-sidebar-accent-foreground dark:font-semibold dark:text-foreground',
         )
       }
     >
@@ -52,7 +52,10 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
           {isActive ? (
             <motion.span
               layoutId={pillId}
-              className="absolute inset-0 rounded-xl bg-sidebar-accent shadow-sm ring-1 ring-border"
+              className={cn(
+                'absolute inset-0 bg-sidebar-accent shadow-sm ring-1 ring-border dark:bg-primary/15 dark:ring-primary/30',
+                indent ? 'rounded-lg' : 'rounded-xl',
+              )}
               transition={{ type: 'spring', stiffness: 420, damping: 34 }}
             />
           ) : null}
@@ -107,9 +110,11 @@ function ConversationList({ botId }) {
               key={item.user_id}
               type="button"
               onClick={() => setSelectedChat(item)}
+              aria-current={active ? 'true' : undefined}
               className={cn(
-                'flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-muted',
-                active && 'bg-card shadow-sm ring-1 ring-border',
+                'flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring hover:bg-muted dark:hover:bg-sidebar-accent',
+                active &&
+                  'bg-card font-normal shadow-sm ring-1 ring-border dark:bg-primary/15 dark:font-medium dark:ring-primary/30',
               )}
             >
               <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
@@ -278,7 +283,7 @@ export default function AppShell() {
   return (
     <ChatNavContext.Provider value={{ selectedChat, setSelectedChat }}>
     <div className="min-h-svh bg-muted lg:flex">
-      <aside className="sticky top-0 hidden h-svh w-[280px] shrink-0 flex-col lg:flex">
+      <aside className="sticky top-0 hidden h-svh w-[280px] shrink-0 flex-col border-sidebar-border dark:border-r dark:bg-sidebar lg:flex">
         <Brand />
         <SidebarNav />
         <div className="mt-auto px-4 pb-2">
@@ -298,8 +303,12 @@ export default function AppShell() {
             <DrawerContent className="w-72 bg-sidebar">
               <DrawerTitle className="sr-only">Menu navigasi</DrawerTitle>
               <Brand />
-              <SidebarNav pillId="drawer" onNavigate={() => setMenuOpen(false)} />
-              <AccountFooter email={email} onLogout={handleLogout} />
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <SidebarNav pillId="drawer" onNavigate={() => setMenuOpen(false)} />
+              </div>
+              <div className="mt-auto shrink-0">
+                <AccountFooter email={email} onLogout={handleLogout} />
+              </div>
             </DrawerContent>
           </Drawer>
           <div className="flex items-center gap-1">

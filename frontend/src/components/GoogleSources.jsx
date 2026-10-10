@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileSpreadsheet, Folder, RefreshCw, Trash2 } from 'lucide-react'
+import { FileSpreadsheet, Folder, Link2, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
+import EmptyState from '@/components/EmptyState'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch, errorMessage, invalidate } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 
-export default function GoogleSources({ bot, mode = 'full' }) {
+export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
   const key = `sources:${bot.id}`
   const { data, loading, refresh } = useApi(key, () => apiFetch(key, { url: `/api/bots/${bot.id}/sources` }))
   const [url, setUrl] = useState('')
@@ -15,6 +16,10 @@ export default function GoogleSources({ bot, mode = 'full' }) {
   const [details, setDetails] = useState({})
   const [syncing, setSyncing] = useState(null)
   const sources = data?.sources ?? []
+
+  useEffect(() => {
+    onCountChange?.(sources.length)
+  }, [sources.length, onCountChange])
 
   // ponytail: buka tab link -> sinkron semua otomatis + tiap 45 dtk (murah: backend cache 60 dtk)
   const sourcesRef = useRef([])
@@ -103,7 +108,13 @@ export default function GoogleSources({ bot, mode = 'full' }) {
     )
   }
   if (sources.length === 0) {
-    return <p className="text-sm text-muted-foreground">Belum ada link.</p>
+    return (
+      <EmptyState
+        icon={Link2}
+        title="Belum ada link"
+        description="Hubungkan Google Sheets produk atau folder Drive gambar agar bot selalu membaca data terbaru."
+      />
+    )
   }
   return (
     <ul className="space-y-2">

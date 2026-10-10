@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
-import { FileSpreadsheet, FileText, Loader2, Pencil, RefreshCw, Trash2, Upload, X } from 'lucide-react'
+import { FileSpreadsheet, FileText, Image as ImageIcon, Loader2, Pencil, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { toast } from 'sonner'
 
 import ConfirmDialog from '@/components/ConfirmDialog'
@@ -47,6 +47,8 @@ export default function BotFiles() {
   const [editLabel, setEditLabel] = useState('')
   const [viewing, setViewing] = useState(null)
   const [tab, setTab] = useState('docs')
+  const [linkCount, setLinkCount] = useState(0)
+  const isDocs = tab === 'docs'
 
   const uploadAll = async () => {
     if (pending.length === 0) return
@@ -164,33 +166,37 @@ export default function BotFiles() {
         <div className="mb-4 flex items-center justify-between gap-3 flex-col md:flex-row">
           <div>
             <h2 id="upload-title" className="font-semibold">
-              Unggah berkas katalog
+              {isDocs ? 'Unggah berkas katalog' : 'Unggah gambar katalog'}
             </h2>
             <p className="mt-0.5 text-sm text-muted-foreground">
-              Bot menjawab pertanyaan dan mencatat pesanan berdasarkan isi berkas ini.
+              {isDocs
+                ? 'Bot menjawab pertanyaan dan mencatat pesanan berdasarkan isi berkas ini.'
+                : 'Bot menampilkan gambar ini ke pelanggan dan memakainya sebagai referensi jawaban.'}
             </p>
           </div>
           <span className="shrink-0 text-xs text-muted-foreground">
-            {docCount}/{MAX_FILES} dokumen · {imageCount}/{MAX_IMAGE_FILES} gambar
+            {isDocs ? `${docCount}/${MAX_FILES} dokumen` : `${imageCount}/${MAX_IMAGE_FILES} gambar`}
           </span>
         </div>
 
-        {docRemaining === 0 && imageRemaining === 0 ? (
+        {(isDocs ? docRemaining === 0 : imageRemaining === 0) ? (
           <p className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-            Batas maksimal {MAX_FILES} dokumen dan {MAX_IMAGE_FILES} gambar sudah tercapai. Hapus berkas lama untuk mengunggah yang
-            baru.
+            {isDocs
+              ? `Batas maksimal ${MAX_FILES} dokumen sudah tercapai. Hapus berkas lama untuk mengunggah yang baru.`
+              : `Batas maksimal ${MAX_IMAGE_FILES} gambar sudah tercapai. Hapus gambar lama untuk mengunggah yang baru.`}
           </p>
         ) : (
           <>
             <UploadDropzone
               value={pending}
               onChange={setPending}
-              maxFiles={docRemaining + imageRemaining}
+              maxFiles={isDocs ? docRemaining : imageRemaining}
               disabled={uploading}
-              accept=".pdf,.docx,.doc,.xlsx,.jpg,.jpeg,.png,.webp"
+              accept={isDocs ? '.pdf,.docx,.doc,.xlsx' : '.jpg,.jpeg,.png,.webp'}
+              formatsLabel={isDocs ? 'PDF, DOCX, atau XLSX' : 'JPG, JPEG, PNG, atau WEBP'}
             />
             <p className="mt-2 text-xs text-muted-foreground">
-              Sisa: {docRemaining} dokumen · {imageRemaining} gambar
+              {isDocs ? `Sisa: ${docRemaining} dokumen` : `Sisa: ${imageRemaining} gambar`}
             </p>
             {pending.length > 0 ? (
               <div className="mt-4 space-y-3">
@@ -227,7 +233,7 @@ export default function BotFiles() {
                   ) : (
                     <Upload aria-hidden="true" />
                   )}
-                  Unggah {pending.length} Berkas
+                  Unggah {pending.length} {isDocs ? 'Berkas' : 'Gambar'}
                 </Button>
               </div>
             ) : null}
@@ -240,7 +246,7 @@ export default function BotFiles() {
         <div className="mb-3 flex items-center justify-between gap-3">
           {tab !== 'links' ? (
           <h2 id="files-title" className="font-semibold">
-            Berkas terunggah
+            {tab === 'images' ? 'Gambar terunggah' : 'Berkas terunggah'}
           </h2>
           ) : (
           <h2 id="files-title" className="font-semibold">
@@ -259,13 +265,13 @@ export default function BotFiles() {
               className="absolute inset-y-0.5 left-0.5 w-[calc((100%-4px)/3)] rounded-md bg-background shadow-sm transition-transform duration-300 ease-out"
               style={{ transform: tab === 'images' ? 'translateX(100%)' : tab === 'links' ? 'translateX(200%)' : 'translateX(0)' }}
             />
-            {[{ id: 'docs', label: `Berkas (${docCount})` }, { id: 'images', label: `Gambar (${imageCount})` }, { id: 'links', label: 'Link' }].map((t) => (
+            {[{ id: 'docs', label: `Berkas (${docCount})` }, { id: 'images', label: `Gambar (${imageCount})` }, { id: 'links', label: `Link (${linkCount})` }].map((t) => (
               <button
                 key={t.id}
                 type="button"
                 role="tab"
                 aria-selected={tab === t.id}
-                onClick={() => setTab(t.id)}
+                onClick={() => { setTab(t.id); setPending([]); setLabels({}) }}
                 className={`relative z-10 rounded-md px-3 py-1 transition-colors ${tab === t.id ? 'font-medium text-foreground' : 'text-muted-foreground'}`}
               >
                 {t.label}
@@ -304,7 +310,7 @@ export default function BotFiles() {
           </div>
         ) : null}
 
-        {tab === 'links' ? (<GoogleSources bot={bot} mode="list" />) : tab === 'docs' ? (loading && !data ? (
+        {tab === 'links' ? (<GoogleSources bot={bot} mode="list" onCountChange={setLinkCount} />) : tab === 'docs' ? (loading && !data ? (
           <div className="space-y-2">
             <Skeleton className="h-14 rounded-lg" />
             <Skeleton className="h-14 rounded-lg" />
@@ -390,7 +396,11 @@ export default function BotFiles() {
             })}
           </ul>
         )) : (images.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Belum ada gambar.</p>
+          <EmptyState
+            icon={ImageIcon}
+            title="Belum ada gambar"
+            description="Unggah foto produk, menu, atau banner agar bot bisa menampilkannya ke pelanggan."
+          />
         ) : (
           <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
             {images.map((file, index) => (

@@ -11,6 +11,7 @@ export default function UploadDropzone({
   value = [],
   onChange,
   accept = '.pdf,.docx,.doc,.xlsx',
+  formatsLabel = 'PDF, DOCX, atau XLSX',
   maxFiles = 10,
   maxSize = DEFAULT_MAX_SIZE,
   disabled = false,
@@ -84,7 +85,7 @@ export default function UploadDropzone({
         </span>
         <p className="text-sm font-medium">Letakkan berkas di sini atau klik untuk memilih</p>
         <p className="text-xs text-muted-foreground">
-          PDF, DOCX, atau XLSX · maksimal {formatBytes(maxSize)} per berkas · {value.length}/{maxFiles} terpilih
+          {formatsLabel} · maksimal {formatBytes(maxSize)} per berkas · {value.length}/{maxFiles} terpilih
         </p>
         <input
           ref={inputRef}
