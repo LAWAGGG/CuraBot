@@ -115,16 +115,18 @@ def sheet_context(bot_id: int, db) -> str:
     sources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
     for s in sources:
         try:
-            _headers, rows, m = read_sheet_rows(s)
-            nc, pc, sc = m.get("name_col"), m.get("price_col"), m.get("stock_col")
+            headers, rows, _m = read_sheet_rows(s)
+            # ponytail: AI baca semua kolom apa adanya, tanpa mapping manual
+            labels = [(h or f"Kolom{i + 1}").strip() for i, h in enumerate(headers)]
             for r in rows:
-                def _get(i):
-                    return (r[i].strip() if i is not None and i < len(r) else "")
-                name = _get(nc)
-                if not name:
+                parts = []
+                for i, h in enumerate(labels):
+                    v = (r[i].strip() if i < len(r) and r[i] else "")
+                    if v:
+                        parts.append(f"{h}: {v}"[:150])
+                if not parts:
                     continue
-                price, stock = _get(pc), _get(sc)
-                lines.append(f"- {name}" + (f" | Rp{price}" if price else "") + (f" | stok {stock}" if stock else ""))
+                lines.append("- " + " | ".join(parts))
                 if len("\n".join(lines)) > 7500:
                     break
             s.last_error = None
@@ -147,7 +149,7 @@ def list_drive_images(source) -> list:
     svc = _drive_service()
     out, token = [], None
     while True:
-        resp = svc.files().list(q=f"'{source.external_id}' in parents and trashed=false", fields="files(id,name,mimeType),nextPageToken", pageSize=100, pageToken=token).execute(timeout=15)
+        resp = svc.files().list(q=f"'{source.external_id}' in parents and trashed=false", fields="files(id,name,mimeType),nextPageToken", pageSize=100, pageToken=token).execute(num_retries=2)
         for f in resp.get("files", []):
             if (f.get("mimeType") or "").startswith("image/"):
                 out.append({"id": f["id"], "name": f.get("name", "")})

@@ -71,6 +71,8 @@ const MESSAGE_MAP = [
   [/link ini sudah terhubung/i, 'Link ini sudah terhubung.'],
   [/hanya link docs\.google\.com.*/i, 'Hanya link docs.google.com / drive.google.com.'],
   [/sync gagal.*/i, 'Sinkronisasi Google gagal. Cek share akses.'],
+  [/verifikasi gagal.*/i, '$&'],
+  [/terhubung tapi verifikasi gagal.*/i, '$&'],
 ]
 
 function mapDetail(detail) {
@@ -85,7 +87,7 @@ export function errorMessage(error) {
   if (error instanceof ApiError) return error.message
   const response = error?.response
   if (!response) return 'Tidak dapat terhubung ke server. Periksa koneksi Anda lalu coba lagi.'
-  const mapped = mapDetail(response.data?.message)
+  const mapped = mapDetail(response.data?.message ?? response.data?.detail)
   if (mapped) return mapped
   const status = response.status
   if (status === 400) return 'Permintaan tidak dapat diproses.'

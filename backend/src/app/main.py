@@ -413,11 +413,13 @@ def create_source(bot_id: int, body: schemas.SourceCreateIn, user_id: int = Depe
             gsvc.list_drive_images(row)
         row.last_error = None
     except Exception as e:
-        row.last_error = gsvc._safe_err(e)
+        # ponytail: verifikasi gagal -> hapus row yatim biar retry tidak mentok 409
+        err = gsvc._safe_err(e)
+        db.delete(row)
+        db.commit()
+        raise HTTPException(502, f"Verifikasi gagal: {err}. Pastikan link benar & sudah di-share ke {config.GOOGLE_CLIENT_EMAIL}")
     db.commit()
     db.refresh(row)
-    if row.last_error:
-        raise HTTPException(502, f"Terhubung tapi verifikasi gagal: {row.last_error}. Pastikan share ke {config.GOOGLE_CLIENT_EMAIL}")
     return source_to_dict(row)
 
 
@@ -457,15 +459,25 @@ def delete_source(bot_id: int, source_id: int, user_id: int = Depends(security.g
     db.commit()
     gsvc._sheet_cache.pop(bot_id, None)
     gsvc._drive_cache.pop(source_id, None)
+    _SYNC_CACHE.pop(source_id, None)
     return {"ok": True}
 
 
+# ponytail: hasil sync 60 dtk biar polling web murah (Google dipukul maks 1x/mnt/sumber)
+_SYNC_CACHE: dict[int, tuple[float, dict]] = {}
+_SYNC_CACHE_TTL = 60
+
+
 @app.post("/api/bots/{bot_id}/sources/{source_id}/sync")
-def sync_source(bot_id: int, source_id: int, user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+def sync_source(bot_id: int, source_id: int, auto: int = Query(0), user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
     get_bot_or_404(db, user_id, bot_id)
     row = db.query(BotExternalSource).filter(BotExternalSource.id == source_id, BotExternalSource.bot_id == bot_id).first()
     if not row:
         raise HTTPException(404, "Source not found")
+    if auto:
+        hit = _SYNC_CACHE.get(row.id)
+        if hit and time.time() - hit[0] < _SYNC_CACHE_TTL:
+            return hit[1]
     try:
         if row.kind == "sheet":
             headers, rows, m = gsvc.read_sheet_rows(row)
@@ -475,11 +487,14 @@ def sync_source(bot_id: int, source_id: int, user_id: int = Depends(security.get
             db.commit()
             nc = m.get("name_col")
             preview = [r[nc] if nc is not None and nc < len(r) else "" for r in rows[:5]]
-            return {"ok": True, "headers": headers, "mapping": row.mapping, "preview": preview, "total_rows": len(rows)}
-        items = gsvc.list_drive_images(row)
-        row.last_error = None
-        db.commit()
-        return {"ok": True, "preview": [i["name"] for i in items[:5]], "total_rows": len(items)}
+            payload = {"ok": True, "headers": headers, "mapping": row.mapping, "preview": preview, "total_rows": len(rows)}
+        else:
+            items = gsvc.list_drive_images(row)
+            row.last_error = None
+            db.commit()
+            payload = {"ok": True, "preview": [i["name"] for i in items[:5]], "total_rows": len(items)}
+        _SYNC_CACHE[row.id] = (time.time(), payload)
+        return payload
     except Exception as e:
         row.last_error = gsvc._safe_err(e)
         db.commit()
@@ -600,6 +615,60 @@ def emit_conversation(db: Session, bot_id: int, user_id_value: str, msg: Message
     if msg is not None:
         data["bubbles"] = split_bubbles(msg, bot_id)
     broker.publish(bot_id, "conversation_updated", data)
+
+
+# ponytail: label gambar terakhir yg dikirim bot per chat, biar reply "ini apa?" terjawab
+_LAST_SENT_IMAGES: dict[str, tuple[float, list]] = {}
+# ponytail: message_id foto bot -> label, biar reply ke foto tertentu tepat sasaran
+_SENT_PHOTO_MSG: dict[int, str] = {}
+
+
+def _remember_sent_images(chat_id, labels: list) -> None:
+    if not labels:
+        return
+    try:
+        _LAST_SENT_IMAGES[str(chat_id)] = (time.time(), [str(label) for label in labels][-5:])
+    except Exception:
+        pass
+
+
+def _remember_photo_msg(message_id, label) -> None:
+    try:
+        if message_id and label:
+            _SENT_PHOTO_MSG[int(message_id)] = str(label)
+            while len(_SENT_PHOTO_MSG) > 500:
+                _SENT_PHOTO_MSG.pop(next(iter(_SENT_PHOTO_MSG)))
+    except Exception:
+        pass
+
+
+def _reply_context(message: dict) -> str:
+    # ponytail: customer quote-reply -> beri tahu AI 1 baris pesan mana yg dibalas
+    try:
+        reply = message.get("reply_to_message") or {}
+        if not reply:
+            return ""
+        chat_id = str((message.get("chat") or {}).get("id") or "")
+        quoted = ((reply.get("text") or reply.get("caption") or "").strip())[:300]
+        if reply.get("photo"):
+            try:
+                lbl = _SENT_PHOTO_MSG.get(int(reply.get("message_id") or 0)) or ""
+            except (TypeError, ValueError):
+                lbl = ""
+            if not lbl:
+                last = _LAST_SENT_IMAGES.get(chat_id)
+                lbl = last[1][-1] if last and time.time() - last[0] < 3600 and last[1] else ""
+            if lbl:
+                ctx = (f"[Customer membalas foto bot (file '{lbl}'). "
+                       "Jawab dari nama file ini; bila customer menebak nama lain, cocokkan dulu — "
+                       "benarkan hanya bila cocok, koreksi bila tidak. Jangan asal setuju.]")
+                return ctx + (f" Kutipan: '{quoted}'." if quoted else "")
+            return "[Customer membalas foto dari bot.]" + (f" Kutipan: '{quoted}'." if quoted else "")
+        if quoted:
+            return f"[Customer membalas pesan: '{quoted}']"
+    except Exception:
+        pass
+    return ""
 
 
 @app.websocket("/api/bots/{bot_id}/ws")
@@ -997,10 +1066,16 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                 db.commit()
         return {"ok": True}
     text = (message.get("text") or "").strip()
+    # ponytail: reply/quote -> tempel konteks yg dibalas biar AI nyambung ("ini apa?", "mana?")
+    reply_ctx = _reply_context(message)
+    if reply_ctx and text:
+        text = f"{reply_ctx} {text}"
     # customer mengirim foto bukti pembayaran -> simpan & teruskan ke dashboard, status TIDAK diubah AI
     photos = message.get("photo") or []
     if photos:
         caption = (message.get("caption") or "").strip()
+        if reply_ctx:
+            caption = f"{reply_ctx} {caption}".strip()
         chat_id = message.get("chat", {}).get("id")
         binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
         if binding:
@@ -1301,15 +1376,29 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     image_rows = (db.query(UploadedFile)
                   .filter(UploadedFile.bot_id == bot.id, UploadedFile.file_type.in_(config.IMAGE_EXTS))
                   .order_by(UploadedFile.created_at.asc()).all())
-    if image_rows:
+    # ponytail: AI baca Drive otomatis — daftar nama file Drive masuk prompt, tanpa set manual
+    drive_names: list[str] = []
+    try:
+        for ds in db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all():
+            try:
+                drive_names.extend(i["name"] for i in gsvc.list_drive_images(ds) if i.get("name"))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if image_rows or drive_names:
         lines = "\n".join(f"- {(r.label or r.filename)} | {r.filename}" for r in image_rows)
+        if drive_names:
+            lines += ("\n" if lines else "") + "\n".join(f"- {n}" for n in drive_names[:100])
         system_prompt += (
             "\n\nDAFTAR GAMBAR TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + lines + "\n"
             "ATURAN GAMBAR (wajib):\n"
             "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: label]` dengan label PERSIS seperti di daftar untuk tiap gambar yang cocok. Boleh juga pakai filename bila label kosong.\n"
             "2. DILARANG mengarang label/filename yang tidak ada di daftar.\n"
             "3. Tidak ada gambar yang cocok -> katakan belum tersedia, JANGAN tulis marker.\n"
-            "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar."
+            "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar.\n"
+            "5. Gambar tidak ada di daftar -> JANGAN berjanji mengirim foto ('ini fotonya', 'saya kirim ulang'); cukup SATU pesan singkat bahwa gambarnya belum tersedia.\n"
+            "6. Customer menebak nama ('ini X bukan?', 'kalau ini?') -> cocokkan X dengan nama file foto/daftar; benarkan hanya bila cocok, koreksi bila tidak. Jangan asal setuju."
         )
 
     start = time.time()
@@ -1337,6 +1426,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                      or payment.mentions_payment(text)))
     pay_kb = payment.payment_keyboard(bot) if show_pay else None
     paths = []
+    tmp_files = []
+    sent_labels = []
     for name in wanted:
         # ponytail: toleransi format lama "label | filename" -> coba bagian filename juga
         candidates = [name] + ([name.rsplit("|", 1)[-1].strip()] if "|" in name else [])
@@ -1352,6 +1443,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             p = config.resolve_upload_path(row.file_path)
             if p and os.path.exists(p):
                 paths.append(p)
+                sent_labels.append(row.label or row.filename)
     if wanted:
         have = set(os.path.basename(p) for p in paths)
         missing = [w for w in wanted if w not in have]
@@ -1371,36 +1463,67 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                             tmp = f"/tmp/curabot-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
                             with open(tmp, "wb") as _f:
                                 _f.write(data)
-                            try:
-                                telegram_api.send_photo(token, chat_id, tmp)
-                                paths.append(tmp)
-                            finally:
-                                try:
-                                    os.remove(tmp)
-                                except OSError:
-                                    pass
+                            # ponytail: JANGAN kirim di sini; kumpulkan lalu kirim sekali di bawah
+                            paths.append(tmp)
+                            tmp_files.append(tmp)
+                            sent_labels.append(hit)
                             missing.remove(w)
                     except Exception:
                         continue
             except Exception:
                 pass
-    try:
-        # ponytail: kirim semua; Telegram maks 10 foto per album, jadi pecah per 10
+    # ponytail: kirim sekali; gagal/tidak-tersedia -> SATU pesan gabungan (anti dobel)
+    image_note_sent = False
+    if paths:
+        delivered = 0
         for i in range(0, len(paths), 10):
             chunk = paths[i:i + 10]
-            if len(chunk) == 1:
-                telegram_api.send_photo(token, chat_id, chunk[0])
-            else:
-                try:
-                    telegram_api.send_media_group(token, chat_id, chunk)
-                except Exception:
-                    for p in chunk:
-                        telegram_api.send_photo(token, chat_id, p)
-        if wanted and not paths:
-            telegram_api.send_message(token, chat_id, "Maaf, gambar untuk itu belum tersedia ya.")
-    except Exception:
+            chunk_labels = sent_labels[i:i + 10]
+            try:
+                if len(chunk) == 1:
+                    res = telegram_api.send_photo(token, chat_id, chunk[0])
+                    _remember_photo_msg((res or {}).get("message_id"), chunk_labels[0] if chunk_labels else "")
+                else:
+                    try:
+                        results = telegram_api.send_media_group(token, chat_id, chunk)
+                        for r, lb in zip(results or [], chunk_labels):
+                            _remember_photo_msg((r or {}).get("message_id"), lb)
+                    except Exception:
+                        for p, lb in zip(chunk, chunk_labels):
+                            res1 = telegram_api.send_photo(token, chat_id, p)
+                            _remember_photo_msg((res1 or {}).get("message_id"), lb)
+                delivered += len(chunk)
+            except Exception:
+                for p, lb in zip(chunk, chunk_labels):
+                    try:
+                        res1 = telegram_api.send_photo(token, chat_id, p)
+                        _remember_photo_msg((res1 or {}).get("message_id"), lb)
+                        delivered += 1
+                    except Exception:
+                        continue
+        for t in tmp_files:
+            try:
+                os.remove(t)
+            except OSError:
+                pass
+        if delivered:
+            _remember_sent_images(chat_id, sent_labels or wanted)
+        else:
+            note = "Maaf, gambar gagal dikirim. Coba lagi ya."
+            try:
+                telegram_api.send_message(token, chat_id,
+                                          f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                          reply_markup=pay_kb)
+                image_note_sent = True
+            except Exception:
+                pass
+    elif wanted:
+        note = "Maaf, gambar untuk itu belum tersedia ya."
         try:
-            telegram_api.send_message(token, chat_id, "Maaf, gambar gagal dikirim. Coba lagi ya.")
+            telegram_api.send_message(token, chat_id,
+                                      f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                      reply_markup=pay_kb)
+            image_note_sent = True
         except Exception:
             pass
 
@@ -1493,12 +1616,13 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
 
-    try:
-        telegram_api.send_message(token, chat_id,
-                                  clean_reply if clean_reply else "Berikut gambarnya ya.",
-                                  reply_markup=pay_kb)
-    except Exception:
-        pass
+    if not image_note_sent:
+        try:
+            telegram_api.send_message(token, chat_id,
+                                      clean_reply if clean_reply else "Berikut gambarnya ya.",
+                                      reply_markup=pay_kb)
+        except Exception:
+            pass
 
     # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
     if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):

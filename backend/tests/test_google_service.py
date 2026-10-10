@@ -6,8 +6,8 @@ class GoogleConfigTest(unittest.TestCase):
     def test_google_settings_exist(self):
         assert hasattr(config, "GOOGLE_CREDENTIALS_PATH")
         assert hasattr(config, "GOOGLE_CLIENT_EMAIL")
-        assert config.GOOGLE_SHEET_TTL == 300
-        assert config.GOOGLE_DRIVE_TTL == 600
+        assert config.GOOGLE_SHEET_TTL == 60
+        assert config.GOOGLE_DRIVE_TTL == 120
 
 
 class GoogleModelsTest(unittest.TestCase):

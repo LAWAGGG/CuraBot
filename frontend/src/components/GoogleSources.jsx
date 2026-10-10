@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { FileSpreadsheet, Folder, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { FileSpreadsheet, Folder, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -13,10 +13,34 @@ export default function GoogleSources({ bot, mode = 'full' }) {
   const [kind, setKind] = useState('sheet')
   const [busy, setBusy] = useState(false)
   const [details, setDetails] = useState({})
-  const [saving, setSaving] = useState(null)
   const [syncing, setSyncing] = useState(null)
   const sources = data?.sources ?? []
-  const COLS = [['name_col', 'Nama'], ['price_col', 'Harga'], ['stock_col', 'Stok'], ['image_col', 'Gambar']]
+
+  // ponytail: buka tab link -> sinkron semua otomatis + tiap 45 dtk (murah: backend cache 60 dtk)
+  const sourcesRef = useRef([])
+  sourcesRef.current = sources
+  useEffect(() => {
+    if (mode === 'input') return
+    let cancelled = false
+    const autoAll = async () => {
+      if (document.hidden) return
+      for (const s of sourcesRef.current) {
+        if (cancelled) return
+        try {
+          const r = await apiFetch(null, { method: 'post', url: `/api/bots/${bot.id}/sources/${s.id}/sync?auto=1` })
+          if (!cancelled) setDetails((d) => ({ ...d, [s.id]: { headers: r.headers ?? [], preview: r.preview ?? [], total_rows: r.total_rows ?? 0 } }))
+        } catch { /* gagal -> last_error tampil di list */ }
+      }
+      if (!cancelled) {
+        invalidate(key)
+        try { await refresh() } catch { /* abaikan */ }
+      }
+    }
+    if (!loading && sources.length > 0) autoAll()
+    const timer = setInterval(autoAll, 45000)
+    return () => { cancelled = true; clearInterval(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, loading, sources.length])
 
   const connect = async () => {
     if (!url.trim()) return toast.error('Tempel link Google dulu.')
@@ -27,27 +51,22 @@ export default function GoogleSources({ bot, mode = 'full' }) {
       invalidate(key)
       await refresh()
       toast.success('Link terhubung.')
-    } catch (e) { toast.error(errorMessage(e)) } finally { setBusy(false) }
+    } catch (e) {
+      // ponytail: refresh biar list sinkron dgn DB (row gagal tidak disisakan / row sukses tetap tampil)
+      invalidate(key)
+      try { await refresh() } catch { /* abaikan */ }
+      toast.error(errorMessage(e))
+    } finally { setBusy(false) }
   }
   const sync = async (id) => {
     setSyncing(id)
     try {
       const r = await apiFetch(null, { method: 'post', url: `/api/bots/${bot.id}/sources/${id}/sync` })
-      if (r.headers) setDetails((d) => ({ ...d, [id]: { headers: r.headers, mapping: r.mapping ?? {} } }))
+      setDetails((d) => ({ ...d, [id]: { headers: r.headers ?? [], preview: r.preview ?? [], total_rows: r.total_rows ?? 0 } }))
       invalidate(key)
       await refresh()
-      toast.success(`Sinkron ok: ${r.total_rows} baris.`)
+      toast.success(`Sinkron ok: ${r.total_rows} baris. AI baca semua kolom otomatis.`)
     } catch (e) { toast.error(errorMessage(e)) } finally { setSyncing(null) }
-  }
-  const saveMapping = async (id, colKey, val) => {
-    setSaving(id)
-    try {
-      const updated = await apiFetch(null, { method: 'patch', url: `/api/bots/${bot.id}/sources/${id}`, data: { [colKey]: val === '' ? null : Number(val) } })
-      setDetails((d) => ({ ...d, [id]: { headers: d[id]?.headers ?? [], mapping: updated.mapping ?? {} } }))
-      invalidate(key)
-      await refresh()
-      toast.success('Petakan kolom tersimpan.')
-    } catch (e) { toast.error(errorMessage(e)) } finally { setSaving(null) }
   }
   const remove = async (id) => {
     try {
@@ -127,24 +146,19 @@ export default function GoogleSources({ bot, mode = 'full' }) {
                 <Trash2 aria-hidden="true" />
               </Button>
             </div>
-            {s.kind === 'sheet' && details[s.id] ? (
-              <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-                {COLS.map(([colKey, label]) => (
-                  <label key={colKey} className="text-xs text-muted-foreground">
-                    {label}
-                    <select
-                      value={details[s.id].mapping?.[colKey] ?? ''}
-                      disabled={saving === s.id}
-                      onChange={(e) => saveMapping(s.id, colKey, e.target.value)}
-                      className="mt-0.5 w-full rounded-md border border-border bg-background px-1.5 py-1 text-sm text-foreground"
-                    >
-                      <option value="">—</option>
-                      {details[s.id].headers.map((h, i) => (
-                        <option key={i} value={i}>{h || `Kolom ${i + 1}`}</option>
-                      ))}
-                    </select>
-                  </label>
-                ))}
+            {details[s.id] ? (
+              <div className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+                <p>AI baca semua kolom otomatis · {details[s.id].total_rows} baris</p>
+                {details[s.id].headers?.length ? (
+                  <p className="mt-0.5 truncate" title={details[s.id].headers.join(' | ')}>
+                    Kolom: {details[s.id].headers.join(' | ')}
+                  </p>
+                ) : null}
+                {details[s.id].preview?.length ? (
+                  <p className="mt-0.5 truncate" title={details[s.id].preview.join(', ')}>
+                    Isi: {details[s.id].preview.slice(0, 5).join(', ')}
+                  </p>
+                ) : null}
               </div>
             ) : null}
           </li>
