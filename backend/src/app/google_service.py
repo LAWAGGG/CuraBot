@@ -141,41 +141,220 @@ def sheet_context(bot_id: int, db) -> str:
     return ctx
 
 
-def list_drive_images(source) -> list:
+IMAGE_PREFIX = "image/"
+VIDEO_PREFIX = "video/"
+GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
+GOOGLE_SLIDE_MIME = "application/vnd.google-apps.presentation"
+GOOGLE_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+_GOOGLE_EXPORT_MIMES = {GOOGLE_DOC_MIME: "text/plain", GOOGLE_SLIDE_MIME: "text/plain", GOOGLE_SHEET_MIME: "text/csv"}
+_BINARY_DOC_MIMES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "text/plain",
+    "text/csv",
+}
+_BINARY_DOC_EXTS = (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".txt", ".csv")
+_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v")
+MAX_DRIVE_DOC_BYTES = 10 * 1024 * 1024
+MAX_DRIVE_VIDEO_BYTES = 50 * 1024 * 1024
+_DRIVE_LIST_LIMIT = 500
+_DRIVE_DOCS_PER_SOURCE = 20
+_drive_docs_cache: dict[int, tuple[float, str]] = {}
+
+
+def classify_mime(mime: str, name: str = "") -> str:
+    """Klasifikasi murni tanpa I/O: image | doc | video | unsupported."""
+    m = (mime or "").lower()
+    if m.startswith(IMAGE_PREFIX):
+        return "image"
+    if m.startswith(VIDEO_PREFIX):
+        return "video"
+    if m in _GOOGLE_EXPORT_MIMES or m in _BINARY_DOC_MIMES:
+        return "doc"
+    ext = os.path.splitext(name or "")[1].lower()
+    if ext in _BINARY_DOC_EXTS:
+        return "doc"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    return "unsupported"
+
+
+def _list_drive_all(source) -> list:
     now = time.time()
     hit = _drive_cache.get(source.id)
     if hit and now - hit[0] < config.GOOGLE_DRIVE_TTL:
         return hit[1]
     svc = _drive_service()
+    # ponytail: flat, tanpa rekursi subfolder/shortcut -> anti traversal keluar folder
     out, token = [], None
     while True:
         resp = svc.files().list(q=f"'{source.external_id}' in parents and trashed=false", fields="files(id,name,mimeType),nextPageToken", pageSize=100, pageToken=token).execute(num_retries=2)
         for f in resp.get("files", []):
-            if (f.get("mimeType") or "").startswith("image/"):
-                out.append({"id": f["id"], "name": f.get("name", "")})
+            if f.get("id") and f.get("name"):
+                out.append({"id": f["id"], "name": f.get("name", ""), "mime": f.get("mimeType", "")})
+            if len(out) >= _DRIVE_LIST_LIMIT:
+                break
         token = resp.get("nextPageToken")
-        if not token:
+        if not token or len(out) >= _DRIVE_LIST_LIMIT:
             break
     _drive_cache[source.id] = (now, out)
     return out
 
 
-def download_drive_image(file_id: str) -> bytes:
-    if not ID_RE.match(file_id or ""):
-        raise ValueError("file_id tidak valid")
+def list_drive_images(source) -> list:
+    return [{"id": f["id"], "name": f["name"]} for f in _list_drive_all(source) if classify_mime(f.get("mime", ""), f.get("name", "")) == "image"]
+
+
+def list_drive_docs(source) -> list:
+    return [f for f in _list_drive_all(source) if classify_mime(f.get("mime", ""), f.get("name", "")) == "doc"]
+
+
+def list_drive_videos(source) -> list:
+    return [f for f in _list_drive_all(source) if classify_mime(f.get("mime", ""), f.get("name", "")) == "video"]
+
+
+def drive_summary(source) -> dict:
+    """Ringkasan folder campur untuk sync/preview. Tanpa download isi file."""
+    images, docs, videos = [], [], []
+    unsupported = 0
+    for f in _list_drive_all(source):
+        kind = classify_mime(f.get("mime", ""), f.get("name", ""))
+        if kind == "image":
+            images.append(f["name"])
+        elif kind == "doc":
+            docs.append(f["name"])
+        elif kind == "video":
+            videos.append(f["name"])
+        else:
+            unsupported += 1
+    return {
+        "images": len(images), "docs": len(docs), "videos": len(videos),
+        "unsupported": unsupported, "preview": images[:5],
+        "preview_docs": docs[:5], "preview_videos": videos[:5],
+    }
+
+
+def _download_request(req, max_bytes: int) -> bytes:
     from googleapiclient.http import MediaIoBaseDownload
     import io as _io
-    svc = _drive_service()
-    req = svc.files().get_media(fileId=file_id)
     buf = _io.BytesIO()
     dl = MediaIoBaseDownload(buf, req)
     done = False
     while not done:
         _, done = dl.next_chunk()
     data = buf.getvalue()
-    if not data or len(data) > 25 * 1024 * 1024:
-        raise ValueError("Ukuran gambar Drive tidak valid")
+    if not data or len(data) > max_bytes:
+        raise ValueError("Ukuran file Drive tidak valid")
     return data
+
+
+def download_drive_file(file_id: str, max_bytes: int = 25 * 1024 * 1024) -> bytes:
+    if not ID_RE.match(file_id or ""):
+        raise ValueError("file_id tidak valid")
+    svc = _drive_service()
+    return _download_request(svc.files().get_media(fileId=file_id), max_bytes)
+
+
+def download_drive_image(file_id: str) -> bytes:
+    if not ID_RE.match(file_id or ""):
+        raise ValueError("file_id tidak valid")
+    try:
+        return download_drive_file(file_id)
+    except ValueError:
+        raise ValueError("Ukuran gambar Drive tidak valid")
+
+
+def export_drive_text(file_id: str, mime: str) -> bytes:
+    if not ID_RE.match(file_id or ""):
+        raise ValueError("file_id tidak valid")
+    export_mime = _GOOGLE_EXPORT_MIMES.get((mime or "").lower())
+    if not export_mime:
+        raise ValueError("bukan dokumen Google")
+    svc = _drive_service()
+    return _download_request(svc.files().export_media(fileId=file_id, mimeType=export_mime), MAX_DRIVE_DOC_BYTES)
+
+
+def extract_drive_text(name: str, mime: str, data: bytes) -> str:
+    """Parse bytes -> teks. Sama seperti parser upload (pdf/docx/xlsx/txt/csv)."""
+    if not data:
+        return ""
+    m = (mime or "").lower()
+    if m in _GOOGLE_EXPORT_MIMES or m in ("text/plain", "text/csv"):
+        try:
+            return data.decode("utf-8", errors="ignore").strip()[:8000]
+        except Exception:
+            return ""
+    ext = os.path.splitext(name or "")[1].lower()
+    try:
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            import io as _io
+            reader = PdfReader(_io.BytesIO(data))
+            return "\n".join((p.extract_text() or "") for p in reader.pages).strip()[:8000]
+        if ext in (".docx", ".doc"):
+            from docx import Document
+            import io as _io
+            doc = Document(_io.BytesIO(data))
+            return "\n".join(p.text for p in doc.paragraphs).strip()[:8000]
+        if ext in (".xlsx", ".xls"):
+            from openpyxl import load_workbook
+            import io as _io
+            wb = load_workbook(_io.BytesIO(data), read_only=True, data_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f"[Sheet: {ws.title}]")
+                for row in ws.iter_rows(values_only=True):
+                    cells = ["" if c is None else str(c) for c in row]
+                    if any(cells):
+                        out.append(" | ".join(cells))
+            wb.close()
+            return "\n".join(out).strip()[:8000]
+        if ext in (".txt", ".csv"):
+            return data.decode("utf-8", errors="ignore").strip()[:8000]
+    except Exception:
+        return ""
+    return ""
+
+
+def drive_docs_context(bot_id: int, db) -> str:
+    from .models import BotExternalSource
+    now = time.time()
+    hit = _drive_docs_cache.get(bot_id)
+    if hit and now - hit[0] < config.GOOGLE_DRIVE_TTL:
+        return hit[1]
+    chunks: list[str] = []
+    try:
+        sources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "drive_folder").all()
+    except Exception:
+        sources = []
+    for s in sources:
+        try:
+            docs = list_drive_docs(s)
+        except Exception:
+            continue
+        for d in docs[:_DRIVE_DOCS_PER_SOURCE]:
+            try:
+                mime = d.get("mime", "")
+                if mime.lower() in _GOOGLE_EXPORT_MIMES:
+                    raw = export_drive_text(d["id"], mime)
+                else:
+                    raw = download_drive_file(d["id"], MAX_DRIVE_DOC_BYTES)
+                text = extract_drive_text(d.get("name", ""), mime, raw).strip()
+            except Exception:
+                continue
+            if not text:
+                continue
+            chunks.append(f"[{d.get('name', '')}]\n{text[:2000]}")
+            if len("\n\n".join(chunks)) > 4000:
+                break
+        if len("\n\n".join(chunks)) > 4000:
+            break
+    ctx = "Dokumen Google Drive:\n" + "\n\n".join(chunks) if chunks else ""
+    _drive_docs_cache[bot_id] = (now, ctx)
+    return ctx
 
 
 def adjust_stock(source, product_name: str, delta: int) -> bool:

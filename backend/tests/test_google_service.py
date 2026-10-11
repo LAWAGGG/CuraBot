@@ -48,6 +48,79 @@ class GoogleParseTest(unittest.TestCase):
         assert google_service.fuzzy_find("kulkas 2 pintu", ["baju.jpg"]) is None
 
 
+class DriveClassifyTest(unittest.TestCase):
+    def test_image(self):
+        from app import google_service
+        assert google_service.classify_mime("image/jpeg", "foto.jpg") == "image"
+
+    def test_video_mime(self):
+        from app import google_service
+        assert google_service.classify_mime("video/mp4", "klip.mp4") == "video"
+
+    def test_video_ext_fallback(self):
+        from app import google_service
+        assert google_service.classify_mime("application/octet-stream", "klip.mov") == "video"
+
+    def test_google_docs(self):
+        from app import google_service
+        assert google_service.classify_mime("application/vnd.google-apps.document", "Menu") == "doc"
+        assert google_service.classify_mime("application/vnd.google-apps.presentation", "Deck") == "doc"
+        assert google_service.classify_mime("application/vnd.google-apps.spreadsheet", "Harga") == "doc"
+
+    def test_binary_docs(self):
+        from app import google_service
+        assert google_service.classify_mime("application/pdf", "katalog.pdf") == "doc"
+        assert google_service.classify_mime("application/octet-stream", "nota.txt") == "doc"
+        assert google_service.classify_mime("", "harga.csv") == "doc"
+
+    def test_unsupported(self):
+        from app import google_service
+        # ponytail: folder/shortcut/zip di dalam folder Drive diabaikan (flat, tanpa rekursi)
+        assert google_service.classify_mime("application/vnd.google-apps.folder", "Sub") == "unsupported"
+        assert google_service.classify_mime("application/vnd.google-apps.shortcut", "Link") == "unsupported"
+        assert google_service.classify_mime("application/zip", "arsip.zip") == "unsupported"
+        assert google_service.classify_mime("", "tanpa-ekstensi") == "unsupported"
+
+    def test_drive_summary_no_io(self):
+        import time
+        from types import SimpleNamespace
+        from app import google_service
+        src = SimpleNamespace(id=999991, external_id="unused")
+        google_service._drive_cache[src.id] = (time.time(), [
+            {"id": "a1b2c3d4e5", "name": "baju.jpg", "mime": "image/jpeg"},
+            {"id": "b1b2c3d4e5", "name": "Menu", "mime": "application/vnd.google-apps.document"},
+            {"id": "c1b2c3d4e5", "name": "katalog.pdf", "mime": "application/pdf"},
+            {"id": "d1b2c3d4e5", "name": "klip.mp4", "mime": "video/mp4"},
+            {"id": "e1b2c3d4e5", "name": "arsip.zip", "mime": "application/zip"},
+        ])
+        try:
+            s = google_service.drive_summary(src)
+            assert (s["images"], s["docs"], s["videos"], s["unsupported"]) == (1, 2, 1, 1)
+            assert s["preview"] == ["baju.jpg"]
+            assert s["preview_videos"] == ["klip.mp4"]
+        finally:
+            google_service._drive_cache.pop(src.id, None)
+
+    def test_export_rejects_non_google_without_io(self):
+        from app import google_service
+        try:
+            google_service.export_drive_text("ABCdef123-_4567890", "image/jpeg")
+            assert False, "harus ditolak"
+        except ValueError:
+            pass
+        try:
+            google_service.download_drive_file("x")
+            assert False, "harus ditolak"
+        except ValueError:
+            pass
+
+    def test_extract_txt(self):
+        from app import google_service
+        assert google_service.extract_drive_text("nota.txt", "text/plain", b"harga 10rb") == "harga 10rb"
+        assert google_service.extract_drive_text("a.csv", "text/csv", b"nama,harga\nbaju,50000") == "nama,harga\nbaju,50000"
+        assert google_service.extract_drive_text("x.pdf", "application/pdf", b"") == ""
+
+
 class SourceDictTest(unittest.TestCase):
     def test_source_to_dict_shape(self):
         from app.main import source_to_dict

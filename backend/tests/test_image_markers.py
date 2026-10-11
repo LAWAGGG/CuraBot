@@ -1,5 +1,5 @@
 import unittest
-from app.image_markers import parse_image_markers
+from app.image_markers import parse_image_markers, parse_media_markers, parse_video_markers
 
 class ParseMarkersTest(unittest.TestCase):
     def test_single(self):
@@ -43,3 +43,38 @@ class ParseMarkersTest(unittest.TestCase):
         assert "\r" not in clean
         assert "\n\n\n" not in clean
         assert files == ["a.jpg"]
+
+
+class ParseVideoMarkersTest(unittest.TestCase):
+    def test_single(self):
+        clean, files = parse_video_markers("Ini videonya [VID: klip.mp4] ya")
+        assert files == ["klip.mp4"]
+        assert "[VID:" not in clean
+
+    def test_multiple_and_dedupe(self):
+        clean, files = parse_video_markers("[VID: a.mp4] lalu [VID: b.mp4] dan [VID: a.mp4]")
+        assert files == ["a.mp4", "b.mp4"]
+        assert "[VID:" not in clean
+
+    def test_case_insensitive_and_empty(self):
+        clean, files = parse_video_markers("lihat [vid: X.MP4] dan [VID: ] ya")
+        assert files == ["X.MP4"]
+        assert "[VID:" not in clean and "[vid:" not in clean
+
+    def test_none(self):
+        assert parse_video_markers(None) == ("", [])
+
+    def test_img_parser_ignores_vid(self):
+        clean, files = parse_image_markers("video [VID: a.mp4] dan foto [IMG: b.jpg]")
+        assert files == ["b.jpg"]
+        assert "[VID: a.mp4]" in clean
+
+    def test_vid_parser_ignores_img(self):
+        clean, files = parse_video_markers("video [VID: a.mp4] dan foto [IMG: b.jpg]")
+        assert files == ["a.mp4"]
+        assert "[IMG: b.jpg]" in clean
+
+    def test_media_combined(self):
+        clean, images, videos = parse_media_markers("foto [IMG: b.jpg] video [VID: a.mp4]")
+        assert images == ["b.jpg"] and videos == ["a.mp4"]
+        assert "[IMG:" not in clean and "[VID:" not in clean

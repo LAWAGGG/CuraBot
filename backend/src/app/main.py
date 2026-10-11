@@ -66,6 +66,9 @@ def get_text_from_file(path: str, filename: str) -> str:
                         out.append(" | ".join(cells))
             wb.close()
             return "\n".join(out)
+        if ext in (".txt", ".csv"):
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
     except Exception:
         return ""
     return ""
@@ -430,6 +433,7 @@ def create_source(bot_id: int, body: schemas.SourceCreateIn, user_id: int = Depe
         else:
             gsvc.list_drive_images(row)
         row.last_error = None
+        gsvc._drive_docs_cache.pop(bot_id, None)
     except Exception as e:
         # ponytail: verifikasi gagal -> hapus row yatim biar retry tidak mentok 409
         err = gsvc._safe_err(e)
@@ -477,6 +481,7 @@ def delete_source(bot_id: int, source_id: int, user_id: int = Depends(security.g
     db.commit()
     gsvc._sheet_cache.pop(bot_id, None)
     gsvc._drive_cache.pop(source_id, None)
+    gsvc._drive_docs_cache.pop(bot_id, None)
     _SYNC_CACHE.pop(source_id, None)
     return {"ok": True}
 
@@ -507,10 +512,14 @@ def sync_source(bot_id: int, source_id: int, auto: int = Query(0), user_id: int 
             preview = [r[nc] if nc is not None and nc < len(r) else "" for r in rows[:5]]
             payload = {"ok": True, "headers": headers, "mapping": row.mapping, "preview": preview, "total_rows": len(rows)}
         else:
-            items = gsvc.list_drive_images(row)
+            summ = gsvc.drive_summary(row)
             row.last_error = None
+            gsvc._drive_docs_cache.pop(bot_id, None)
             db.commit()
-            payload = {"ok": True, "preview": [i["name"] for i in items[:5]], "total_rows": len(items)}
+            payload = {"ok": True, "preview": summ["preview"], "total_rows": summ["images"],
+                       "images": summ["images"], "docs": summ["docs"], "videos": summ["videos"],
+                       "unsupported": summ["unsupported"], "preview_docs": summ["preview_docs"],
+                       "preview_videos": summ["preview_videos"]}
         _SYNC_CACHE[row.id] = (time.time(), payload)
         return payload
     except Exception as e:
@@ -1603,11 +1612,18 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
 
     files = (db.query(UploadedFile)
              .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
-    file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)
+    file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)[:6000]
     try:
         gctx = gsvc.sheet_context(bot.id, db)
         if gctx:
             file_context = (file_context + "\n\n" + gctx)[:15000]
+    except Exception:
+        pass
+    try:
+        # ponytail: docs Drive terakhir -> bila overflow, konten baru yg terpotong duluan
+        dctx = gsvc.drive_docs_context(bot.id, db)
+        if dctx:
+            file_context = (file_context + "\n\n" + dctx)[:15000]
     except Exception:
         pass
 
@@ -1765,10 +1781,15 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                   .order_by(UploadedFile.created_at.asc()).all())
     # ponytail: AI baca Drive otomatis — daftar nama file Drive masuk prompt, tanpa set manual
     drive_names: list[str] = []
+    drive_videos: list[str] = []
     try:
         for ds in db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all():
             try:
                 drive_names.extend(i["name"] for i in gsvc.list_drive_images(ds) if i.get("name"))
+            except Exception:
+                pass
+            try:
+                drive_videos.extend(v["name"] for v in gsvc.list_drive_videos(ds) if v.get("name"))
             except Exception:
                 continue
     except Exception:
@@ -1786,6 +1807,15 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar.\n"
             "5. Gambar tidak ada di daftar -> JANGAN berjanji mengirim foto ('ini fotonya', 'saya kirim ulang'); cukup SATU pesan singkat bahwa gambarnya belum tersedia.\n"
             "6. Customer menebak nama ('ini X bukan?', 'kalau ini?') -> cocokkan X dengan nama file foto/daftar; benarkan hanya bila cocok, koreksi bila tidak. Jangan asal setuju."
+        )
+    if drive_videos:
+        vlines = "\n".join(f"- {n}" for n in drive_videos[:50])
+        system_prompt += (
+            "\n\nDAFTAR VIDEO TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + vlines + "\n"
+            "ATURAN VIDEO (wajib):\n"
+            "1. Jika customer meminta video, jawab singkat, lalu tambahkan baris `[VID: nama]` dengan nama PERSIS seperti di daftar untuk tiap video yang cocok.\n"
+            "2. DILARANG mengarang nama yang tidak ada di daftar.\n"
+            "3. Tidak ada video yang cocok -> katakan belum tersedia, JANGAN tulis marker."
         )
 
     start = time.time()
@@ -1874,7 +1904,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         reply = f"{reply}\n\n{slot_q}".strip() if reply else slot_q
     response_time = round(time.time() - start, 2)
 
-    clean_reply, wanted = image_markers.parse_image_markers(reply)
+    clean_reply, wanted, wanted_videos = image_markers.parse_media_markers(reply)
     # ponytail: show_pay/pay_kb sudah dihitung sebelum AI (lihat INFO TOMBOL) -> pakai yg sama
     paths = []
     tmp_files = []
@@ -1981,6 +2011,62 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         except Exception:
             pass
 
+    # ponytail: video Drive kirim-file saja (tanpa analisis AI); maks 3/turn anti sedot kuota
+    video_note = ""
+    video_paths: list[str] = []
+    if wanted_videos:
+        video_labels: list[str] = []
+        video_tmp: list[str] = []
+        try:
+            dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
+        except Exception:
+            dsources = []
+        for w in wanted_videos[:3]:
+            hit = fid = None
+            for ds in dsources:
+                try:
+                    items = gsvc.list_drive_videos(ds)
+                except Exception:
+                    continue
+                hit = gsvc.fuzzy_find(w, [i["name"] for i in items])
+                if hit:
+                    fid = next((i["id"] for i in items if i["name"] == hit), None)
+                    break
+            if not hit or not fid:
+                continue
+            try:
+                data = gsvc.download_drive_file(fid, gsvc.MAX_DRIVE_VIDEO_BYTES)
+                # ponytail: basename Drive milik owner; prefix waktu anti tabrakan /tmp
+                tmp = f"/tmp/curabot-vid-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
+                with open(tmp, "wb") as _f:
+                    _f.write(data)
+                video_paths.append(tmp)
+                video_labels.append(hit)
+                video_tmp.append(tmp)
+            except Exception:
+                continue
+        delivered_v = 0
+        for p, lb in zip(video_paths, video_labels):
+            try:
+                telegram_api.send_document(token, chat_id, p, lb)
+                delivered_v += 1
+            except Exception:
+                continue
+        for t in video_tmp:
+            try:
+                os.remove(t)
+            except OSError:
+                pass
+        if not delivered_v:
+            video_note = "Maaf, video untuk itu belum tersedia ya."
+            if image_note_sent:
+                # ponytail: teks utama sudah terkirim via note gambar -> note video terpisah
+                try:
+                    telegram_api.send_message(token, chat_id, video_note, reply_markup=pay_kb)
+                except Exception:
+                    pass
+                video_note = ""
+
     # customer minta qris & ada gambar QRIS -> kirim gambarnya
     if bot.qris_image_path and "qris" in text.lower():
         try:
@@ -2066,7 +2152,9 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             pass
 
     if not image_note_sent:
-        send_text = (clean_reply if clean_reply else "Berikut gambarnya ya.")
+        send_text = (clean_reply if clean_reply else ("Berikut videonya ya." if video_paths else "Berikut gambarnya ya."))
+        if video_note:
+            send_text = f"{send_text}\n\n{video_note}" if send_text else video_note
         if record_note:
             # ponytail: klaim "tercatat" HANYA dari backend yg tahu DB — bukan dari tebakan AI
             send_text = f"{send_text}\n\n{record_note}"

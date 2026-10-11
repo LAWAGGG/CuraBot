@@ -33,7 +33,7 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
         if (cancelled) return
         try {
           const r = await apiFetch(null, { method: 'post', url: `/api/bots/${bot.id}/sources/${s.id}/sync?auto=1` })
-          if (!cancelled) setDetails((d) => ({ ...d, [s.id]: { headers: r.headers ?? [], preview: r.preview ?? [], total_rows: r.total_rows ?? 0 } }))
+          if (!cancelled) setDetails((d) => ({ ...d, [s.id]: r }))
         } catch { /* gagal -> last_error tampil di list */ }
       }
       if (!cancelled) {
@@ -67,10 +67,13 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
     setSyncing(id)
     try {
       const r = await apiFetch(null, { method: 'post', url: `/api/bots/${bot.id}/sources/${id}/sync` })
-      setDetails((d) => ({ ...d, [id]: { headers: r.headers ?? [], preview: r.preview ?? [], total_rows: r.total_rows ?? 0 } }))
+      setDetails((d) => ({ ...d, [id]: r }))
       invalidate(key)
       await refresh()
-      toast.success(`Sinkron ok: ${r.total_rows} baris. AI baca semua kolom otomatis.`)
+      const summary = r.docs !== undefined
+        ? `${r.images ?? 0} gambar · ${r.docs ?? 0} dokumen · ${r.videos ?? 0} video`
+        : `${r.total_rows} baris`
+      toast.success(`Sinkron ok: ${summary}. AI baca semua kolom otomatis.`)
     } catch (e) { toast.error(errorMessage(e)) } finally { setSyncing(null) }
   }
   const remove = async (id) => {
@@ -90,7 +93,7 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
         <div className="mt-3 flex flex-col gap-2 md:flex-row">
           <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-border bg-background px-2 py-1.5 text-sm">
             <option value="sheet">Spreadsheet produk</option>
-            <option value="drive_folder">Folder Drive gambar</option>
+            <option value="drive_folder">Folder Drive (gambar + dokumen + video)</option>
           </select>
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://docs.google.com/... atau https://drive.google.com/..." className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm" />
           <Button onClick={connect} disabled={busy}>Hubungkan</Button>
@@ -112,7 +115,7 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
       <EmptyState
         icon={Link2}
         title="Belum ada link"
-        description="Hubungkan Google Sheets produk atau folder Drive gambar agar bot selalu membaca data terbaru."
+        description="Hubungkan Google Sheets produk atau folder Drive (gambar + dokumen + video) agar bot selalu membaca data terbaru."
       />
     )
   }
@@ -159,17 +162,35 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
             </div>
             {details[s.id] ? (
               <div className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-                <p>AI baca semua kolom otomatis · {details[s.id].total_rows} baris</p>
-                {details[s.id].headers?.length ? (
-                  <p className="mt-0.5 truncate" title={details[s.id].headers.join(' | ')}>
-                    Kolom: {details[s.id].headers.join(' | ')}
-                  </p>
-                ) : null}
-                {details[s.id].preview?.length ? (
-                  <p className="mt-0.5 truncate" title={details[s.id].preview.join(', ')}>
-                    Isi: {details[s.id].preview.slice(0, 5).join(', ')}
-                  </p>
-                ) : null}
+                {s.kind === 'sheet' ? (
+                  <>
+                    <p>AI baca semua kolom otomatis · {details[s.id].total_rows ?? 0} baris</p>
+                    {details[s.id].headers?.length ? (
+                      <p className="mt-0.5 truncate" title={details[s.id].headers.join(' | ')}>
+                        Kolom: {details[s.id].headers.join(' | ')}
+                      </p>
+                    ) : null}
+                    {details[s.id].preview?.length ? (
+                      <p className="mt-0.5 truncate" title={details[s.id].preview.join(', ')}>
+                        Isi: {details[s.id].preview.slice(0, 5).join(', ')}
+                      </p>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <p>{details[s.id].images ?? 0} gambar · {details[s.id].docs ?? 0} dokumen · {details[s.id].videos ?? 0} video{details[s.id].unsupported ? ` · ${details[s.id].unsupported} tak didukung` : ''}</p>
+                    {details[s.id].preview_docs?.length ? (
+                      <p className="mt-0.5 truncate" title={details[s.id].preview_docs.join(', ')}>
+                        Dokumen: {details[s.id].preview_docs.slice(0, 5).join(', ')}
+                      </p>
+                    ) : null}
+                    {details[s.id].preview_videos?.length ? (
+                      <p className="mt-0.5 truncate" title={details[s.id].preview_videos.join(', ')}>
+                        Video: {details[s.id].preview_videos.slice(0, 5).join(', ')}
+                      </p>
+                    ) : null}
+                  </>
+                )}
               </div>
             ) : null}
           </li>
