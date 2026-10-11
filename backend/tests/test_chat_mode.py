@@ -36,8 +36,18 @@ class ChatModeHelpersTest(unittest.TestCase):
     def test_get_defaults_to_ai(self):
         assert get_chat_mode(self.db, 1, "123") == "ai"
 
-    def test_set_missing_returns_none(self):
-        assert set_chat_mode(self.db, 1, "999", "manual") is None
+    def test_set_missing_creates_row(self):
+        # chat_id unik global: set pada chat baru = buat baris, bukan None
+        row = set_chat_mode(self.db, 1, "999", "manual")
+        assert row is not None and row.mode == "manual" and row.bot_id == 1
+
+    def test_set_rebinds_other_bot(self):
+        # baris milik bot lain direbind, bukan insert ganda (anti IntegrityError 1062)
+        self.db.add(BotChat(bot_id=1, chat_id="123"))
+        self.db.commit()
+        row = set_chat_mode(self.db, 2, "123", "manual")
+        assert row is not None and row.bot_id == 2 and row.mode == "manual"
+        assert self.db.query(BotChat).filter(BotChat.chat_id == "123").count() == 1
 
     def test_set_and_get(self):
         self.db.add(BotChat(bot_id=1, chat_id="123"))

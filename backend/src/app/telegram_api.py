@@ -61,11 +61,13 @@ def download_file(token: str, file_path: str) -> bytes:
 
 
 def send_photo(token: str, chat_id, photo_path: str, caption: str = "",
-               reply_markup: dict | None = None):
+               reply_markup: dict | None = None, reply_to_message_id: int | None = None):
     ext, data = _photo_bytes(photo_path)
     form = {"chat_id": chat_id, "caption": caption[:1000]}
     if reply_markup:
         form["reply_markup"] = json.dumps(reply_markup)
+    if reply_to_message_id:
+        form["reply_parameters"] = json.dumps({"message_id": int(reply_to_message_id)})
     r = requests.post(
         f"{BASE}/bot{token}/sendPhoto",
         data=form,
@@ -99,14 +101,40 @@ def send_media_group(token: str, chat_id, photo_paths: list, caption: str = ""):
     return data["result"]
 
 
-def send_message(token: str, chat_id, text: str, reply_markup: dict | None = None):
+def send_message(token: str, chat_id, text: str, reply_markup: dict | None = None,
+                 reply_to_message_id: int | None = None):
     md = text.replace("**", "*")
     extra = {"reply_markup": reply_markup} if reply_markup else {}
+    if reply_to_message_id:
+        extra["reply_parameters"] = {"message_id": int(reply_to_message_id)}
     try:
         return _call(token, "sendMessage", chat_id=chat_id, text=md[:4000],
                      parse_mode="Markdown", **extra)
     except ValueError:
         return _call(token, "sendMessage", chat_id=chat_id, text=text[:4000], **extra)
+
+
+def send_document(token: str, chat_id, file_path: str, filename: str, caption: str = "",
+                  reply_to_message_id: int | None = None):
+    with open(file_path, "rb") as f:
+        raw = f.read()
+    form = {"chat_id": chat_id, "caption": caption[:1000]}
+    if reply_to_message_id:
+        form["reply_parameters"] = json.dumps({"message_id": int(reply_to_message_id)})
+    r = requests.post(
+        f"{BASE}/bot{token}/sendDocument",
+        data=form,
+        files={"document": (filename, raw)},
+        timeout=60,
+    )
+    data = r.json()
+    if not data.get("ok"):
+        raise ValueError(data.get("description", "Telegram API error"))
+    return data["result"]
+
+
+def delete_message(token: str, chat_id, message_id: int):
+    return _call(token, "deleteMessage", chat_id=chat_id, message_id=int(message_id))
 
 
 def answer_callback_query(token: str, callback_query_id):

@@ -1,11 +1,13 @@
 import asyncio
 import hmac
 import json
+import mimetypes
 import os
 import queue
 import re
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -77,15 +79,20 @@ def get_bot_or_404(db: Session, user_id: int, bot_id: int) -> Bot:
 
 
 def get_chat_mode(db: Session, bot_id: int, chat_id: str) -> str:
-    row = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == str(chat_id)).first()
+    # ponytail: chat_id unik global (1 user Telegram = 1 baris), kunci by chat_id saja
+    row = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
     return (row.mode if row else "ai")
 
 
 def set_chat_mode(db: Session, bot_id: int, chat_id: str, mode: str) -> BotChat | None:
-    row = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == str(chat_id)).first()
+    # ponytail: satukan dengan pola webhook /start: rebind bot_id, jangan insert ganda
+    row = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
     if not row:
-        return None
-    row.mode = mode
+        row = BotChat(bot_id=bot_id, chat_id=str(chat_id), mode=mode)
+        db.add(row)
+    else:
+        row.bot_id = bot_id
+        row.mode = mode
     db.commit()
     db.refresh(row)
     return row
@@ -304,7 +311,18 @@ def get_media(bot_id: int, filename: str,
     path = os.path.realpath(os.path.join(bot_dir, os.path.basename(filename)))
     if os.path.dirname(path) != bot_dir or not os.path.isfile(path):
         raise HTTPException(404, "Media not found")
-    return FileResponse(path)
+    # ponytail: nama asli dari DB biar unduhan rapi; path tetap basename anti traversal
+    dl_name = None
+    try:
+        hit = (db.query(Message.file_name)
+               .filter(Message.bot_id == bot_id,
+                       Message.media_path.like(f"%{os.path.basename(filename)}"))
+               .first())
+        if hit and hit[0]:
+            dl_name = os.path.basename(str(hit[0]))
+    except Exception:
+        pass
+    return FileResponse(path, filename=dl_name or os.path.basename(filename))
 
 
 @app.get("/api/files/{bot_id}")
@@ -521,19 +539,143 @@ def get_messages(bot_id: int, page: int = Query(1, ge=1), limit: int = Query(20,
 
 def split_bubbles(r, bot_id):
     bubbles = []
+    deleted = bool(getattr(r, "is_deleted", False))
+    reply_to = (getattr(r, "reply_to_text", None) or "").strip() or None
+    fname = getattr(r, "file_name", None)
+    fmime = getattr(r, "file_mime", None)
     if r.message_text and r.message_text != "[admin]":
+        # ponytail: baris lama masih simpan prefix ctx mesin -> pecah jadi quote+bersih saat tampil
+        legacy_quote, clean_u = _legacy_quote_split(r.message_text)
         bubbles.append({
-            "id": f"{r.id}-u", "sender": "user", "text": r.message_text,
-            "media_url": config.chat_media_url(bot_id, r.media_path),
+            "id": f"{r.id}-u", "sender": "user",
+            "text": "Pesan ini telah dihapus." if deleted and not r.response_text else clean_u,
+            "media_url": None if deleted else config.chat_media_url(bot_id, r.media_path),
             "created_at": str(r.created_at),
+            "reply_to_text": reply_to or legacy_quote,
+            "file_name": fname, "file_mime": fmime,
+            "is_deleted": deleted,
+            "can_delete": False,
         })
     if r.response_text:
+        is_admin = r.sender == "admin"
         bubbles.append({
-            "id": f"{r.id}-b", "sender": r.sender if r.sender == "admin" else "bot",
-            "text": r.response_text, "media_url": None,
+            "id": f"{r.id}-b", "sender": "admin" if is_admin else "bot",
+            "text": "Pesan ini telah dihapus." if deleted else r.response_text,
+            "media_url": None if deleted else config.chat_media_url(bot_id, r.media_path if is_admin else None),
             "created_at": str(r.created_at),
+            "reply_to_text": reply_to,
+            "file_name": fname if is_admin else None,
+            "file_mime": fmime if is_admin else None,
+            "is_deleted": deleted,
+            # ponytail: hanya pesan admin yg bisa dihapus (Telegram deleteMessage cuma milik bot)
+            "can_delete": bool(is_admin and not deleted),
         })
     return bubbles
+
+
+# manual-chat: allowlist kecil, tanpa dep baru. Gambar via sendPhoto, sisanya via sendDocument.
+MANUAL_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+MANUAL_DOC_EXTS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".csv",
+                   ".mp3", ".ogg", ".mp4", ".zip")
+MANUAL_ALLOWED_EXTS = MANUAL_IMAGE_EXTS + MANUAL_DOC_EXTS
+MAX_MANUAL_BYTES = min(int(config.MAX_FILE_SIZE or 0) or 25 * 1024 * 1024, 20 * 1024 * 1024)
+
+
+def _tg_msg_id(result) -> int | None:
+    try:
+        mid = (result or {}).get("message_id")
+        return int(mid) if mid else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _inbound_tg_id(message: dict) -> int | None:
+    # ponytail: id Telegram pesan masuk, untuk quote/delete manual ke depan
+    try:
+        mid = (message or {}).get("message_id")
+        return int(mid) if mid else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_quote(db: Session, bot_id: int, customer_id: str, bubble_id: str | None):
+    """Validasi bubble milik thread yg sama. Return (reply_to_tg_id, reply_to_text)."""
+    if not bubble_id:
+        return None, None
+    try:
+        raw, _suffix = str(bubble_id).rsplit("-", 1)
+        mid = int(raw)
+    except (ValueError, AttributeError):
+        raise HTTPException(422, "Invalid reply target")
+    row = (db.query(Message)
+           .filter(Message.id == mid, Message.bot_id == bot_id, Message.user_id == customer_id)
+           .first())
+    if not row or bool(getattr(row, "is_deleted", False)):
+        raise HTTPException(404, "Replied message not found")
+    # teks kutipan: prioritaskan sisi yg diklik (user/bot), fallback sisi lain
+    suffix = str(bubble_id).rsplit("-", 1)[-1]
+    if suffix == "u":
+        quoted = (row.message_text or "") if row.message_text != "[admin]" else (row.response_text or "")
+    else:
+        quoted = (row.response_text or "") or (row.message_text or "")
+    if row.file_name and not (quoted or "").strip():
+        quoted = f"[file] {row.file_name}"
+    quoted = (quoted or "").strip()[:300] or None
+    # ponytail: sisi -u = pesan masuk (inbound id), sisi -b = balasan bot (outbound id)
+    def _as_int(v):
+        try:
+            return int(v) if v else None
+        except (TypeError, ValueError):
+            return None
+    tg_in = _as_int(getattr(row, "telegram_message_id", None))
+    tg_out = _as_int(getattr(row, "telegram_response_id", None))
+    tg_id = tg_out if suffix == "b" else tg_in
+    if not tg_id:
+        tg_id = tg_in or tg_out
+    return tg_id, quoted
+
+
+def _set_manual(db: Session, bot_id: int, chat_id: str) -> None:
+    # ponytail: chat_id unik global; rebind ke bot ini (pola sama dgn webhook /start).
+    # Query by (bot_id, chat_id) + insert buta = IntegrityError 1062 + 500 tanpa header CORS.
+    binding = db.query(BotChat).filter(BotChat.chat_id == str(chat_id)).first()
+    if binding:
+        binding.bot_id = bot_id
+        binding.mode = "manual"
+    else:
+        db.add(BotChat(bot_id=bot_id, chat_id=str(chat_id), mode="manual"))
+
+
+def _save_manual_file(bot_id: int, upload: UploadFile) -> tuple[str, str, str, bool]:
+    """Validasi + simpan lampiran manual. Return (dest, safe_original, mime, is_image)."""
+    original = (upload.filename or "").strip()
+    safe_base = os.path.basename(original)
+    ext = os.path.splitext(safe_base)[1].lower()
+    if ext not in MANUAL_ALLOWED_EXTS:
+        raise HTTPException(400, f"Only {', '.join(MANUAL_ALLOWED_EXTS)} allowed")
+    data = upload.file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    if len(data) > MAX_MANUAL_BYTES:
+        raise HTTPException(400, f"File too large (max {MAX_MANUAL_BYTES // (1024 * 1024)}MB)")
+    is_image = ext in MANUAL_IMAGE_EXTS
+    if is_image:
+        # ponytail: verifikasi gambar asli biar bukan script ganti ekstensi
+        try:
+            from PIL import Image
+            import io as _io
+            img = Image.open(_io.BytesIO(data))
+            img.verify()
+        except Exception:
+            raise HTTPException(400, "Invalid image file")
+    safe_original = re.sub(r"[^A-Za-z0-9._-]+", "_", safe_base)[:120] or f"file{ext}"
+    dest_dir = os.path.join(config.UPLOAD_DIR, str(bot_id))
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, f"manual_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}")
+    with open(dest, "wb") as f:
+        f.write(data)
+    mime = mimetypes.guess_type(safe_original)[0] or (upload.content_type or "application/octet-stream")
+    return dest, safe_original, mime, is_image
 
 
 class BotEventBroker:
@@ -642,6 +784,81 @@ def _remember_photo_msg(message_id, label) -> None:
         pass
 
 
+def _sent_photo_label(reply: dict, chat_id: str) -> str:
+    # ponytail: label foto bot yg direply customer ( dipakai AI ctx + quote display )
+    try:
+        lbl = _SENT_PHOTO_MSG.get(int(reply.get("message_id") or 0)) or ""
+    except (TypeError, ValueError):
+        lbl = ""
+    if not lbl:
+        last = _LAST_SENT_IMAGES.get(str(chat_id or ""))
+        lbl = last[1][-1] if last and time.time() - last[0] < 3600 and last[1] else ""
+    return lbl or ""
+
+
+def _inbound_quote(message: dict) -> str | None:
+    """Kutipan bersih reply customer untuk display (tanpa instruksi AI)."""
+    try:
+        reply = message.get("reply_to_message") or {}
+        if not reply:
+            return None
+        quoted = ((reply.get("text") or reply.get("caption") or "").strip())[:300]
+        if reply.get("photo"):
+            lbl = _sent_photo_label(reply, str((message.get("chat") or {}).get("id") or ""))
+            base = f"[foto{(': ' + lbl) if lbl else ''}]"
+            return f"{base} {quoted}".strip() if quoted else base
+        return quoted or None
+    except Exception:
+        return None
+
+
+def _strip_reply_ctx(stored: str | None, reply_ctx: str | None) -> str:
+    """Kembalikan teks simpanan ke aslinya (buang prefix ctx yg ditempel untuk AI)."""
+    try:
+        if reply_ctx and stored and stored.startswith(reply_ctx):
+            return stored[len(reply_ctx):].lstrip()
+    except Exception:
+        pass
+    return stored or ""
+
+
+# ponytail: prefix ctx mesin untuk baris lama (display saja, data baru sudah bersih)
+_LEGACY_QUOTE_RE = re.compile(
+    r"^\[Customer membalas (?:pesan: '.*?'|foto bot.*?\])(?: Kutipan: '.*?'\.)?\s*",
+    re.DOTALL,
+)
+_LEGACY_TEXT_RE = re.compile(r"^\[Customer membalas pesan: '(?P<q>.*?)'\]\s*(?P<t>.*)$", re.DOTALL)
+_LEGACY_PHOTO_RE = re.compile(
+    r"^\[Customer membalas foto (?:bot \(file '(?P<f>.*?)'\)\.|dari bot\.).*?\](?: Kutipan: '(?P<q>.*?)'\.)?\s*(?P<t>.*)$",
+    re.DOTALL,
+)
+
+
+def _clean_customer_text(stored: str | None) -> str:
+    try:
+        return _LEGACY_QUOTE_RE.sub("", stored or "")
+    except Exception:
+        return stored or ""
+
+
+def _legacy_quote_split(stored: str | None) -> tuple[str | None, str]:
+    """Baris lama: pecah prefix ctx jadi (quote, bersih). Baris baru: (None, asli)."""
+    try:
+        s = stored or ""
+        m = _LEGACY_TEXT_RE.match(s)
+        if m:
+            return (m.group("q").strip()[:300] or None, m.group("t"))
+        m = _LEGACY_PHOTO_RE.match(s)
+        if m:
+            f = (m.group("f") or "").strip()
+            q = (m.group("q") or "").strip()[:300]
+            base = f"[foto{(': ' + f) if f else ''}]"
+            return (f"{base} {q}".strip() if q else base, m.group("t"))
+    except Exception:
+        pass
+    return None, stored or ""
+
+
 def open_order_for_chat(db, bot_id: int, chat_id):
     """Pesanan aktif yg boleh dibatalkan customer: pending/incomplete/confirmed terbaru."""
     return (db.query(ExtractedOrder)
@@ -659,13 +876,7 @@ def _reply_context(message: dict) -> str:    # ponytail: customer quote-reply ->
         chat_id = str((message.get("chat") or {}).get("id") or "")
         quoted = ((reply.get("text") or reply.get("caption") or "").strip())[:300]
         if reply.get("photo"):
-            try:
-                lbl = _SENT_PHOTO_MSG.get(int(reply.get("message_id") or 0)) or ""
-            except (TypeError, ValueError):
-                lbl = ""
-            if not lbl:
-                last = _LAST_SENT_IMAGES.get(chat_id)
-                lbl = last[1][-1] if last and time.time() - last[0] < 3600 and last[1] else ""
+            lbl = _sent_photo_label(reply, chat_id)
             if lbl:
                 ctx = (f"[Customer membalas foto bot (file '{lbl}'). "
                        "Jawab dari nama file ini; bila customer menebak nama lain, cocokkan dulu — "
@@ -799,23 +1010,110 @@ def reply_thread(bot_id: int, customer_id: str, body: schemas.ReplyIn,
               .order_by(desc(Message.created_at), desc(Message.id)).first())
     if not latest:
         raise HTTPException(404, "Customer chat not found")
-    if not body.text.strip():
+    text = (body.text or "").strip()
+    if not text:
         raise HTTPException(422, "Reply text empty")
+    if len(text) > 4000:
+        raise HTTPException(422, "Reply too long")
+    reply_tg_id, reply_txt = _resolve_quote(db, bot_id, customer_id, body.reply_to_bubble_id)
     try:
-        telegram_api.send_message(config.TELEGRAM_TOKEN, latest.chat_id, body.text.strip())
+        result = telegram_api.send_message(
+            config.TELEGRAM_TOKEN, latest.chat_id, text, reply_to_message_id=reply_tg_id)
     except Exception as e:
         raise HTTPException(502, f"Failed to send Telegram message: {e}")
     msg = Message(bot_id=bot_id, user_id=customer_id, chat_id=latest.chat_id,
-                  sender="admin", message_text="[admin]", response_text=body.text.strip())
+                  sender="admin", message_text="[admin]", response_text=text,
+                  telegram_message_id=_tg_msg_id(result), reply_to_text=reply_txt)
     db.add(msg)
     db.commit()
-    binding = db.query(BotChat).filter(BotChat.bot_id == bot_id, BotChat.chat_id == latest.chat_id).first()
-    if binding:
-        binding.mode = "manual"
-    else:
-        db.add(BotChat(bot_id=bot_id, chat_id=latest.chat_id, mode="manual"))
+    _set_manual(db, bot_id, latest.chat_id)
     db.commit()
+    db.refresh(msg)
     emit_conversation(db, bot_id, customer_id, msg)
+    return {"ok": True}
+
+
+@app.post("/api/bots/{bot_id}/conversations/{customer_id}/reply-media", status_code=201)
+def reply_media(bot_id: int, customer_id: str,
+                file: UploadFile = File(...),
+                text: str = Form(default=""),
+                reply_to_bubble_id: str | None = Form(default=None),
+                user_id: int = Depends(security.get_current_user),
+                db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    latest = (db.query(Message).filter(Message.bot_id == bot_id, Message.user_id == customer_id)
+              .order_by(desc(Message.created_at), desc(Message.id)).first())
+    if not latest:
+        raise HTTPException(404, "Customer chat not found")
+    caption = (text or "").strip()[:1000]
+    reply_tg_id, reply_txt = _resolve_quote(db, bot_id, customer_id, reply_to_bubble_id)
+    if reply_to_bubble_id and reply_to_bubble_id.strip() and len(reply_to_bubble_id.strip()) > 50:
+        raise HTTPException(422, "Invalid reply target")
+    dest = None
+    try:
+        dest, safe_original, mime, is_image = _save_manual_file(bot_id, file)
+        try:
+            if is_image:
+                result = telegram_api.send_photo(
+                    config.TELEGRAM_TOKEN, latest.chat_id, dest,
+                    caption=caption, reply_to_message_id=reply_tg_id)
+            else:
+                result = telegram_api.send_document(
+                    config.TELEGRAM_TOKEN, latest.chat_id, dest, safe_original,
+                    caption=caption, reply_to_message_id=reply_tg_id)
+        except Exception as e:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            raise HTTPException(502, f"Failed to send Telegram message: {e}")
+        msg = Message(bot_id=bot_id, user_id=customer_id, chat_id=latest.chat_id,
+                      sender="admin", message_text="[admin]",
+                      response_text=caption or f"[file] {safe_original}",
+                      media_path=dest, file_name=safe_original, file_mime=mime,
+                      telegram_message_id=_tg_msg_id(result), reply_to_text=reply_txt)
+        db.add(msg)
+        db.commit()
+        _set_manual(db, bot_id, latest.chat_id)
+        db.commit()
+        db.refresh(msg)
+        emit_conversation(db, bot_id, customer_id, msg)
+        return {"ok": True, "id": msg.id}
+    except HTTPException:
+        raise
+    except Exception:
+        if dest:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+        raise HTTPException(500, "Failed to process attachment")
+
+
+@app.delete("/api/bots/{bot_id}/conversations/{customer_id}/messages/{message_id}")
+def delete_manual_message(bot_id: int, customer_id: str, message_id: int,
+                          user_id: int = Depends(security.get_current_user),
+                          db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    row = (db.query(Message)
+           .filter(Message.id == message_id, Message.bot_id == bot_id,
+                   Message.user_id == customer_id, Message.sender == "admin")
+           .first())
+    if not row:
+        raise HTTPException(404, "Message not found")
+    if bool(getattr(row, "is_deleted", False)):
+        return {"ok": True}
+    # ponytail: hapus di Telegram dulu (best-effort), DB selalu soft-delete biar riwayat utuh
+    tg_id = getattr(row, "telegram_message_id", None)
+    if tg_id:
+        try:
+            telegram_api.delete_message(config.TELEGRAM_TOKEN, row.chat_id, int(tg_id))
+        except Exception:
+            pass
+    row.is_deleted = True
+    db.commit()
+    db.refresh(row)
+    emit_conversation(db, bot_id, customer_id, row)
     return {"ok": True}
 
 
@@ -1060,6 +1358,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         return {"ok": True}
     message = payload.get("message") or {}
     chat_id = message.get("chat", {}).get("id")
+    inbound_tg_id = _inbound_tg_id(message)
     # customer share contact -> isi otomatis customer_phone di order aktif/terakhir
     contact = message.get("contact")
     if contact and contact.get("phone_number"):
@@ -1078,6 +1377,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     reply_ctx = _reply_context(message)
     if reply_ctx and text:
         text = f"{reply_ctx} {text}"
+    inbound_quote = _inbound_quote(message)
     # customer mengirim foto bukti pembayaran -> simpan & teruskan ke dashboard, status TIDAK diubah AI
     photos = message.get("photo") or []
     if photos:
@@ -1101,7 +1401,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                             f.write(data)
                         photo_msg = Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
                                            sender="user", media_path=dest,
-                                           message_text=caption or "[foto]", response_text="")
+                                           message_text=(_strip_reply_ctx(caption, reply_ctx) or "[foto]"),
+                                           response_text="",
+                                           telegram_message_id=inbound_tg_id,
+                                           reply_to_text=inbound_quote)
                         db.add(photo_msg)
                         db.commit()
                         db.refresh(photo_msg)
@@ -1121,8 +1424,9 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                         f.write(data)
                     photo_msg = Message(bot_id=bot.id, user_id=str(chat_id), chat_id=str(chat_id),
                                        sender="user", media_path=dest,
-                                       message_text=caption or "[foto]",
-                                       response_text="")
+                                       message_text=(_strip_reply_ctx(caption, reply_ctx) or "[foto]"),
+                                       response_text="", telegram_message_id=inbound_tg_id,
+                                       reply_to_text=inbound_quote)
                     db.add(photo_msg)
                     db.commit()
                     db.refresh(photo_msg)
@@ -1138,14 +1442,15 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                     if not is_proof:
                         if answer:
                             try:
-                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, answer)
+                                res_ans = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, answer)
+                                photo_msg.telegram_response_id = _tg_msg_id(res_ans)
                             except Exception:
                                 pass
                             photo_msg.response_text = answer
                             db.commit()
                             emit_conversation(db, bot.id, str(chat_id), photo_msg)
                             return {"ok": True}
-                        if caption:
+                        if _strip_reply_ctx(caption, reply_ctx):
                             # ponytail: caption ada tapi analyze_photo tak menjawab -> kirim ke vision lagi dengan gambar
                             try:
                                 files2 = files
@@ -1160,7 +1465,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                                         hist.append({"role": "model", "text": r.response_text})
                                 reply2, _m = gemini_service.answer_with_image(
                                     api_key, bot.system_prompt or "", kb, hist, data, caption)
-                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                                res_vision = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                                photo_msg.telegram_response_id = _tg_msg_id(res_vision)
                                 photo_msg.response_text = reply2
                                 db.commit()
                                 emit_conversation(db, bot.id, str(chat_id), photo_msg)
@@ -1169,7 +1475,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                                 text = caption  # fallback terakhir: alur teks
                         else:
                             try:
-                                telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, gemini_service.PHOTO_ASK_BACK)
+                                res_ask = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, gemini_service.PHOTO_ASK_BACK)
+                                photo_msg.telegram_response_id = _tg_msg_id(res_ask)
                             except Exception:
                                 pass
                             photo_msg.response_text = gemini_service.PHOTO_ASK_BACK
@@ -1187,7 +1494,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                             db.commit()
                         telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                                   "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
-                        if not caption:
+                        if not _strip_reply_ctx(caption, reply_ctx):
                             return {"ok": True}
                         try:
                             rows = (db.query(Message)
@@ -1201,7 +1508,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                                     hist.append({"role": "model", "text": r.response_text})
                             reply2, _m = gemini_service.answer_with_image(
                                 api_key, bot.system_prompt or "", kb, hist, data, caption)
-                            telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                            res_vision2 = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                            photo_msg.telegram_response_id = _tg_msg_id(res_vision2)
                             photo_msg.response_text = reply2
                             db.commit()
                             emit_conversation(db, bot.id, str(chat_id), photo_msg)
@@ -1211,7 +1519,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                               "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
-        if not caption:
+        if not _strip_reply_ctx(caption, reply_ctx):
             return {"ok": True}
         text = caption
     if not text:
@@ -1262,7 +1570,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     bot_id = bot.id
     if (binding.mode or "ai") == "manual":
         msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                      sender="user", message_text=text, response_text="")
+                      sender="user", message_text=_strip_reply_ctx(text, reply_ctx), response_text="",
+                      telegram_message_id=inbound_tg_id, reply_to_text=inbound_quote)
         db.add(msg)
         db.commit()
         db.refresh(msg)
@@ -1513,12 +1822,16 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         else:
             cancel_text = "Sepertinya sudah tidak ada pesanan aktif yang bisa dibatalkan ya, Kak. Mau pesan yang lain?"
         try:
-            telegram_api.send_message(token, chat_id, cancel_text)
+            res_cancel = telegram_api.send_message(token, chat_id, cancel_text)
         except Exception:
-            pass
-        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id), message_text=text,
+            res_cancel = None
+        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                      message_text=_strip_reply_ctx(text, reply_ctx),
                       response_text=cancel_text, extracted_data=None,
-                      response_time=round(time.time() - t0, 2), model_used="cancel")
+                      response_time=round(time.time() - t0, 2), model_used="cancel",
+                      telegram_message_id=inbound_tg_id,
+                      telegram_response_id=_tg_msg_id(res_cancel),
+                      reply_to_text=inbound_quote)
         db.add(msg)
         db.commit()
         db.refresh(msg)
@@ -1612,6 +1925,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                 pass
     # ponytail: kirim sekali; gagal/tidak-tersedia -> SATU pesan gabungan (anti dobel)
     image_note_sent = False
+    note_tg_id = None
     if paths:
         delivered = 0
         for i in range(0, len(paths), 10):
@@ -1649,18 +1963,20 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         else:
             note = "Maaf, gambar gagal dikirim. Coba lagi ya."
             try:
-                telegram_api.send_message(token, chat_id,
-                                          f"{clean_reply}\n\n{note}" if clean_reply else note,
-                                          reply_markup=pay_kb)
+                res_note = telegram_api.send_message(token, chat_id,
+                                                     f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                                     reply_markup=pay_kb)
+                note_tg_id = _tg_msg_id(res_note)
                 image_note_sent = True
             except Exception:
                 pass
     elif wanted:
         note = "Maaf, gambar untuk itu belum tersedia ya."
         try:
-            telegram_api.send_message(token, chat_id,
-                                      f"{clean_reply}\n\n{note}" if clean_reply else note,
-                                      reply_markup=pay_kb)
+            res_note2 = telegram_api.send_message(token, chat_id,
+                                                  f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                                  reply_markup=pay_kb)
+            note_tg_id = _tg_msg_id(res_note2)
             image_note_sent = True
         except Exception:
             pass
@@ -1681,9 +1997,11 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         # ponytail: turn niat-batal -> AI hanya diminta tanya konfirmasi; mutasi order dilarang
         order = None
 
-    msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id), message_text=text,
+    msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                  message_text=_strip_reply_ctx(text, reply_ctx),
                   response_text=reply, extracted_data=order, response_time=response_time,
-                  model_used=model_used)
+                  model_used=model_used, telegram_message_id=inbound_tg_id,
+                  telegram_response_id=note_tg_id, reply_to_text=inbound_quote)
     db.add(msg)
     db.commit()
     db.refresh(msg)
@@ -1758,7 +2076,11 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             send_text += ("\n\n⚠️ Ralat: pesanan di atas belum masuk sistem — "
                           "mohon jawab konfirmasi ('Benar') agar kami catat.")
         try:
-            telegram_api.send_message(token, chat_id, send_text, reply_markup=pay_kb)
+            res_main = telegram_api.send_message(token, chat_id, send_text, reply_markup=pay_kb)
+            rid = _tg_msg_id(res_main)
+            if rid:
+                msg.telegram_response_id = rid
+                db.commit()
         except Exception:
             pass
 
@@ -1766,10 +2088,12 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):
         try:
             text_r = payment.reminder_text(bot, saved_order)
-            telegram_api.send_message(token, chat_id, text_r,
-                                      reply_markup=payment.payment_keyboard(bot))
+            res_r = telegram_api.send_message(token, chat_id, text_r,
+                                              reply_markup=payment.payment_keyboard(bot))
             db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                           message_text="[pengingat pembayaran otomatis]", response_text=text_r))
+                           message_text="[pengingat pembayaran otomatis]", response_text=text_r,
+                           telegram_message_id=inbound_tg_id,
+                           telegram_response_id=_tg_msg_id(res_r)))
             db.commit()
         except Exception:
             pass
@@ -1791,10 +2115,12 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
             if not reminded:
                 try:
                     text_r = payment.reminder_text(bot, merged)
-                    telegram_api.send_message(token, chat_id, text_r,
-                                              reply_markup=payment.payment_keyboard(bot))
+                    res_r2 = telegram_api.send_message(token, chat_id, text_r,
+                                                       reply_markup=payment.payment_keyboard(bot))
                     db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                                   message_text="[pengingat pembayaran otomatis]", response_text=text_r))
+                                   message_text="[pengingat pembayaran otomatis]", response_text=text_r,
+                                   telegram_message_id=inbound_tg_id,
+                                   telegram_response_id=_tg_msg_id(res_r2)))
                     db.commit()
                 except Exception:
                     pass

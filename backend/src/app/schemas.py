@@ -43,6 +43,14 @@ class OrderStatusIn(BaseModel):
 
 class ReplyIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
+    reply_to_bubble_id: Optional[str] = Field(default=None, max_length=50)
+
+    @field_validator("text")
+    @classmethod
+    def text_not_blank(cls, v):
+        if not v.strip():
+            raise ValueError("Reply text empty")
+        return v
 
 
 class ModeIn(BaseModel):

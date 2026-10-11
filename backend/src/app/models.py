@@ -67,6 +67,13 @@ class Message(Base):
     response_time = Column(Float)
     model_used = Column(String(50))
     created_at = Column(DateTime, server_default=func.now(), index=True)
+    # manual-chat: quote / lampiran / hapus (Telegram message_id untuk reply & delete)
+    telegram_message_id = Column(Integer, nullable=True)
+    telegram_response_id = Column(Integer, nullable=True)
+    reply_to_text = Column(Text, nullable=True)
+    file_name = Column(String(255), nullable=True)
+    file_mime = Column(String(100), nullable=True)
+    is_deleted = Column(Boolean, nullable=False, default=False, server_default="0")
     bot = relationship("Bot", back_populates="messages")
 
 
