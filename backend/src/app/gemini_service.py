@@ -102,6 +102,14 @@ ORDER_KEYWORDS = ("pesan", "order", "pesanan", "beli", "pesenan", "mau ", "minta
 EDIT_KEYWORDS = ("ubah", "ganti", "edit", "kurangi", "tambah", "tidak jadi", "tdk jadi", "batal", "cancel", "hapus", "revisi", "minus", "plus", "kurang", "tambahin", "ga jadi", "gak jadi", "nggak jadi")
 
 
+def _looks_like_slot_fill(text: str) -> bool:
+    # ponytail: isian slot (HP/alamat/qty) sering tanpa keyword -> jangan blokir; digit = sinyal lanjut order
+    t = (text or "").strip()
+    if not t or len(t) > 200:
+        return False
+    return bool(re.search(r"\d", t))
+
+
 _CUSTOM_WORDS = ("custom", "kustom")
 
 
@@ -133,7 +141,9 @@ def _products_known(products: list, knowledge: str) -> bool:
 
 def extract_order(api_key: str, user_text: str, history: list, existing_order: dict = None, knowledge: str = ""):
     lowered = user_text.lower()
-    if not any(k in lowered for k in ORDER_KEYWORDS) and not any(k in lowered for k in EDIT_KEYWORDS):
+    has_kw = any(k in lowered for k in ORDER_KEYWORDS) or any(k in lowered for k in EDIT_KEYWORDS)
+    # ponytail: lanjutan isi slot (HP/alamat/qty digit-only) + order-in-progress tak boleh diblokir gate keyword
+    if not has_kw and not existing_order and not _looks_like_slot_fill(user_text):
         return None
     ctx = json.dumps([{"role": h.get("role"), "text": h["text"]} for h in history[-4:]])
     existing = json.dumps(existing_order) if existing_order else "null"
@@ -148,6 +158,7 @@ CRITICAL: Treat clear buying intent as a REAL order, including phrases like "say
 If the message is only an acknowledgment or reaction (e.g. "oke", "yaudah", "baik", "thanks", "yahh") with no product mentioned, return {"is_order": false} — do NOT create a new order.
 If the message is an affirmation (e.g. "ya", "betul", "oke", "jadi", "iya deh") AND the last assistant message contains an order summary to confirm, return THAT order with is_order: true, modify: true, and customer_confirmed: true. The order details — especially per-product notes — MUST be copied from the last assistant message's summary, NOT from the existing stored order (the existing order may be stale).
 If the customer changes ONLY the note/special request, return the FULL order (same product/quantity/etc. from existing order or last summary) with the NEW note(s) and modify: true, but customer_confirmed: false (the assistant must ask for confirmation first).
+If the message contains ONLY slot-fill info (phone digits, address, quantity like "3", service choice like "ambil di toko"/"dikirim") with no product name, but Recent context or the existing order shows products being ordered, return the FULL order (those products + the new info) with modify: true if an existing order was given else modify: false, and customer_confirmed: false. Extract digit-only messages (>=9 digits) into customer_phone. Do NOT return is_order:false just because the message alone has no product name.
 For a NEW order where the customer has NOT yet explicitly confirmed a summary, set customer_confirmed: false. Set customer_confirmed: true ONLY when the latest customer message clearly confirms an order summary the assistant previously proposed.
 RULES-EXTRA:
 - Put each customer note for a specific item into that product's "note" field (e.g. [{"product_name": "Nasi Omelet Telur", "quantity": 1, "price": 13000, "note": "telurnya setengah matang"}]). Use different notes per product when they differ.
@@ -191,8 +202,8 @@ def analyze_photo(api_key: str, image_bytes: bytes, caption: str, kb_context: st
     # ponytail: 1 call utk 2 tugas (klasifikasi bukti + jawab) -> hemat token
     kb = (kb_context or "")[:3000]
     prompt = f"""Lihat gambar ini.
-1) is_payment_proof: true kalau gambar adalah bukti transfer/pembayaran (screenshot mutasi, struk, konfirmasi bank/e-wallet), selain itu false.
-2) answer: WAJIB isi pertanyaan singkat jika caption adalah pertanyaan/permintaan apapun tentang gambar atau produk (mis. "ada yang seperti ini?", "ini gambar apa?"). Jawab dari knowledge base: sebutkan produk serupa yang ADA di KB, atau katakan belum tersedia bila tidak ada. HANYA null jika caption kosong/bukan pertanyaan.
+1) is_payment_proof: true HANYA kalau ISI GAMBAR adalah bukti transfer/pembayaran (screenshot mutasi, struk, konfirmasi bank/e-wallet). Abaikan klaim caption (mis. "buktinya", "sudah transfer", "nih lek") — caption bukan bukti. Foto orang/selfie, makanan, chat, kegiatan, pemandangan: selalu false.
+2) answer: WAJIB isi pertanyaan singkat jika caption adalah pertanyaan/permintaan apapun tentang gambar atau produk (mis. "ada yang seperti ini?", "ini gambar apa?"). Jawab dari knowledge base: sebutkan produk serupa yang ADA di KB, atau katakan belum tersedia bila tidak ada. WAJIB juga isi koreksi singkat bila caption mengklaim gambar sebagai bukti pembayaran padahal gambar BUKAN bukti (tolak halus + minta screenshot bukti asli). HANYA null jika caption kosong/bukan pertanyaan dan bukan klaim bukti palsu.
 Knowledge base toko:
 {kb or "(kosong)"}
 Caption: {caption or "(tanpa caption)"}

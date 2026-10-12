@@ -877,6 +877,33 @@ def open_order_for_chat(db, bot_id: int, chat_id):
             .order_by(desc(ExtractedOrder.created_at)).first())
 
 
+_PHONE_RE = re.compile(r"(?:\+?62|0)\d{8,13}")
+
+
+def _phone_from_texts(texts) -> str | None:
+    # ponytail: HP pernah diketik di chat yg sama -> pakai lagi, jangan tanya ulang (anti-loop)
+    try:
+        for t in reversed(list(texts or [])):
+            m = _PHONE_RE.search(t or "")
+            if m and len(re.sub(r"\D", "", m.group(0))) >= 9:
+                return m.group(0).strip()
+    except Exception:
+        pass
+    return None
+
+
+_REJECT_PROOF_WORDS = ("bukan bukti", "bukan transfer", "foto orang", "salah kirim", "salah foto", "bukan screenshot")
+
+
+def _vision_rejects_proof(reply: str) -> bool:
+    # ponytail: 1 panggilan verifikasi kadang salah -> panggilan ke-2 yg bilang "bukan bukti" menang, bukti gagal JANGAN disimpan
+    try:
+        rl = (reply or "").lower()
+        return any(w in rl for w in _REJECT_PROOF_WORDS)
+    except Exception:
+        return False
+
+
 def _reply_context(message: dict) -> str:    # ponytail: customer quote-reply -> beri tahu AI 1 baris pesan mana yg dibalas
     try:
         reply = message.get("reply_to_message") or {}
@@ -1425,7 +1452,8 @@ def _handle_customer_text(db, bot, binding, chat_id, uid, customer_name, text,
                       "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi. "
                       "Tombol konfirmasi dipasang sistem otomatis di bawah pesanmu bila diperlukan — DILARANG membuat/menyebut tombol atau callback_data sendiri, cukup arahkan customer menekan tombol 1x bila INFO TOMBOL menyatakan AKTIF. "
                       "\nATURAN BATAL: pesanan HANYA boleh batal bila customer eksplisit minta + sudah mengonfirmasi. "
-                      "JANGAN pernah membatalkan sepihak atau menawarkan pembatalan atas inisiatif sendiri.")
+                      "JANGAN pernah membatalkan sepihak atau menawarkan pembatalan atas inisiatif sendiri. "
+                      "Biaya custom/tambahan: JANGAN mengarang ada/tidak ada; bila tak tertulis di knowledge base, katakan perlu konfirmasi penjual.")
     cancel_asked = False
     # ponytail: state machine slot pemesanan (1 pertanyaan/turn). extract dipindah ke sini
     existing = (db.query(ExtractedOrder)
@@ -1450,8 +1478,22 @@ def _handle_customer_text(db, bot, binding, chat_id, uid, customer_name, text,
     if not pending_photo and not payment.is_cancel_intent(text) and not (order and order_is_confirmed(order)):
         _vprods = (order.get("products") if order else None) or (existing.products if existing else None) or []
         if _vprods:
-            _vphone = (order.get("customer_phone") if order else None) or (existing.customer_phone if existing else None)
-            _vaddr = (order.get("delivery_address") if order else None) or (existing.delivery_address if existing else None)
+            _vphone = ((order.get("customer_phone") if order else None)
+                       or (existing.customer_phone if existing else None)
+                       or (latest_order.customer_phone if latest_order else None)
+                       or _phone_from_texts([text] + [h.get("text", "") for h in history if h.get("role") == "user"]))
+            _vaddr = ((order.get("delivery_address") if order else None)
+                      or (existing.delivery_address if existing else None)
+                      or (latest_order.delivery_address if latest_order and existing is None and order else None))
+            # ponytail: pilihan ambil-di-toko yg sudah eksplisit jangan ditanya ulang jadi alamat-delivery
+            if not (_vaddr or "").strip():
+                try:
+                    _hist_u = " ".join(h.get("text", "") for h in history if h.get("role") == "user").lower()
+                    _picked = any(w in _hist_u for w in ("ambil di toko", "makan di tempat", "pickup", "pick up", "onsite"))
+                    if _picked and not payment.mentions_delivery(text):
+                        _vaddr = "Onsite"
+                except Exception:
+                    pass
             _noqty = next((p.get("product_name", "produk") for p in _vprods if not (p.get("quantity") or 0)), "")
             _onsite, _deliv = payment.service_options((file_context or "") + "\n" + (bot.system_prompt or ""))
             if _noqty:
@@ -1481,6 +1523,10 @@ def _handle_customer_text(db, bot, binding, chat_id, uid, customer_name, text,
                                   "Bila layanan makan/ambil di tempat: tulis marker [[LOC: alamat persis dari info toko]] 1x (jangan tulis alamat manual); bila online: JANGAN sertakan alamat/link. "
                                   "JANGAN tanya apa pun lagi, JANGAN singgung pembayaran/tombol.")
             skip_ai = bool(slot) and not payment.user_asked_question(text)
+    # ponytail: niat order baru terekstrak -> abaikan status batal/selesai lama, fokus pesanan baru (anti-loop)
+    if order and latest_order and latest_order.status in ("rejected", "completed", "shipped"):
+        system_prompt += ("\nPENTING: customer memulai pesanan BARU turn ini. Abaikan INFO STATUS dibatalkan/selesai di atas; "
+                          "jangan ulang kalimat dibatalkan. Lanjutkan alur pesanan baru (tanya slot yg kurang atau tulis ringkasan + 'Benar, Kak?').")
     ordering_active = bool(slot or (order and not order_is_confirmed(order)))
     data_complete = payment.order_data_complete(latest_order)
     if bot.payment_info and data_complete and latest_order.status in ("pending", "incomplete") and not ordering_active:
@@ -1692,8 +1738,8 @@ def _handle_customer_text(db, bot, binding, chat_id, uid, customer_name, text,
             reply = location_service.enrich_with_maps(reply, m_coords.group(1).strip() if m_coords else None)
         except Exception:
             reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
-    if slot and not cancel_asked:
-        # ponytail: 1 bubble = jawaban AI (bila ada) + 1 pertanyaan slot; tanpa slot: reply AI utuh
+    if slot and not cancel_asked and not payment.user_asked_question(text):
+        # ponytail: 1 pertanyaan/turn; user lagi tanya -> jawab dulu, slot ditanya turn berikut (anti dobel)
         reply = f"{reply}\n\n{slot_q}".strip() if reply else slot_q
     response_time = round(time.time() - start, 2)
 
@@ -2192,6 +2238,53 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                             emit_conversation(db, bot.id, str(chat_id), photo_msg)
                             return {"ok": True}
                     else:
+                        # ponytail: verifikasi-dulu-baru-simpan; caption pernyataan -> 1 bubble terima tanpa call ke-2
+                        _cap = _strip_reply_ctx(caption, reply_ctx)
+                        if _cap and payment.user_asked_question(_cap):
+                            try:
+                                rows = (db.query(Message)
+                                        .filter(Message.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                                Message.id < photo_msg.id)
+                                        .order_by(desc(Message.created_at)).limit(4).all())
+                                hist = []
+                                for r in reversed(rows):
+                                    hist.append({"role": "user", "text": r.message_text})
+                                    if r.response_text:
+                                        hist.append({"role": "model", "text": r.response_text})
+                                reply2, _m = gemini_service.answer_with_image(
+                                    api_key, bot.system_prompt or "", kb, hist, data, caption)
+                            except Exception:
+                                reply2 = ""
+                            if reply2 and _vision_rejects_proof(reply2):
+                                # vision bilang bukan bukti -> JANGAN simpan ke order, 1 bubble koreksi saja
+                                try:
+                                    res_v = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
+                                    photo_msg.telegram_response_id = _tg_msg_id(res_v)
+                                except Exception:
+                                    pass
+                                photo_msg.response_text = reply2
+                                db.commit()
+                                emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                                return {"ok": True}
+                            latest = (db.query(ExtractedOrder)
+                                      .join(Message, Message.id == ExtractedOrder.message_id)
+                                      .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
+                                              ExtractedOrder.status.in_(["pending", "incomplete"]))
+                                      .order_by(desc(ExtractedOrder.created_at)).first())
+                            if latest:
+                                latest.payment_proof_path = dest
+                                db.commit()
+                            accept = "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya."
+                            send_text = f"{accept}\n\n{reply2}".strip() if reply2 else accept
+                            try:
+                                res_a = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, send_text)
+                                photo_msg.telegram_response_id = _tg_msg_id(res_a)
+                            except Exception:
+                                pass
+                            photo_msg.response_text = send_text
+                            db.commit()
+                            emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                            return {"ok": True}
                         latest = (db.query(ExtractedOrder)
                                   .join(Message, Message.id == ExtractedOrder.message_id)
                                   .filter(ExtractedOrder.bot_id == bot.id, Message.chat_id == str(chat_id),
@@ -2200,30 +2293,16 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
                         if latest:
                             latest.payment_proof_path = dest
                             db.commit()
-                        telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
-                                                  "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya.")
-                        if not _strip_reply_ctx(caption, reply_ctx):
-                            return {"ok": True}
+                        accept = "Terima kasih, bukti pembayaran sudah kami terima dan diteruskan ke penjual. Mohon tunggu konfirmasi ya."
                         try:
-                            rows = (db.query(Message)
-                                    .filter(Message.bot_id == bot.id, Message.chat_id == str(chat_id),
-                                            Message.id < photo_msg.id)
-                                    .order_by(desc(Message.created_at)).limit(4).all())
-                            hist = []
-                            for r in reversed(rows):
-                                hist.append({"role": "user", "text": r.message_text})
-                                if r.response_text:
-                                    hist.append({"role": "model", "text": r.response_text})
-                            reply2, _m = gemini_service.answer_with_image(
-                                api_key, bot.system_prompt or "", kb, hist, data, caption)
-                            res_vision2 = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, reply2)
-                            photo_msg.telegram_response_id = _tg_msg_id(res_vision2)
-                            photo_msg.response_text = reply2
-                            db.commit()
-                            emit_conversation(db, bot.id, str(chat_id), photo_msg)
-                            return {"ok": True}
+                            res_a = telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id, accept)
+                            photo_msg.telegram_response_id = _tg_msg_id(res_a)
                         except Exception:
-                            text = caption
+                            pass
+                        photo_msg.response_text = accept
+                        db.commit()
+                        emit_conversation(db, bot.id, str(chat_id), photo_msg)
+                        return {"ok": True}
                 except Exception:
                     telegram_api.send_message(config.TELEGRAM_TOKEN, chat_id,
                                               "Maaf, bukti tidak bisa kami proses. Coba kirim ulang ya.")
