@@ -139,3 +139,9 @@ def delete_message(token: str, chat_id, message_id: int):
 
 def answer_callback_query(token: str, callback_query_id):
     return _call(token, "answerCallbackQuery", callback_query_id=callback_query_id)
+
+
+def edit_message_reply_markup(token: str, chat_id, message_id: int, reply_markup: dict | None = None):
+    # ponytail: hapus tombol pesan lama best-effort biar tak bisa ditekan 2x
+    return _call(token, "editMessageReplyMarkup", chat_id=chat_id,
+                 message_id=int(message_id), reply_markup=reply_markup or {"inline_keyboard": []})

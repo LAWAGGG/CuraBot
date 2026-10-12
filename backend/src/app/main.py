@@ -1327,6 +1327,688 @@ def analytics(bot_id: int, range: int = Query(7, ge=1, le=365),
 
 # ---------- TELEGRAM WEBHOOK ----------
 
+def _handle_customer_text(db, bot, binding, chat_id, uid, customer_name, text,
+                           reply_ctx="", inbound_quote=None, inbound_tg_id=None):
+    """Satu-satunya jalur teks customer (ketikan + tap tombol cfm:*)."""
+    token = config.TELEGRAM_TOKEN
+    bot_id = bot.id
+    if (binding.mode or "ai") == "manual":
+        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                      sender="user", message_text=_strip_reply_ctx(text, reply_ctx), response_text="",
+                      telegram_message_id=inbound_tg_id, reply_to_text=inbound_quote)
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        emit_conversation(db, bot_id, uid, msg)
+        return {"ok": True}
+    api_key = security.decrypt(bot.api_key_encrypted)
+
+    # foto sebelumnya ditanya balik? -> jawaban teks user ini merujuk ke foto itu
+    pending_photo = (db.query(Message)
+                     .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                             Message.media_path.isnot(None),
+                             Message.response_text == gemini_service.PHOTO_ASK_BACK)
+                     .order_by(desc(Message.id)).first())
+    if pending_photo:
+        answered = (db.query(Message)
+                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                            Message.id > pending_photo.id, Message.media_path.is_(None))
+                    .first())
+        if answered:
+            pending_photo = None
+
+    history_rows = (db.query(Message)
+                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id))
+                    .order_by(desc(Message.created_at)).limit(5).all())
+    history = []
+    for r in reversed(history_rows):
+        history.append({"role": "user", "text": r.message_text})
+        history.append({"role": "model", "text": r.response_text})
+
+    files = (db.query(UploadedFile)
+             .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
+    file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)[:6000]
+    try:
+        gctx = gsvc.sheet_context(bot.id, db)
+        if gctx:
+            file_context = (file_context + "\n\n" + gctx)[:15000]
+    except Exception:
+        pass
+    try:
+        # ponytail: docs Drive terakhir -> bila overflow, konten baru yg terpotong duluan
+        dctx = gsvc.drive_docs_context(bot.id, db)
+        if dctx:
+            file_context = (file_context + "\n\n" + dctx)[:15000]
+    except Exception:
+        pass
+
+    # status order terakhir untuk konteks jawaban AI
+    latest_order = (db.query(ExtractedOrder)
+                    .join(Message, Message.id == ExtractedOrder.message_id)
+                    .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id))
+                    .order_by(desc(ExtractedOrder.created_at)).first())
+    system_prompt = bot.system_prompt
+    if latest_order:
+        guidance = {
+            "pending": "katakan pesanan sedang menunggu konfirmasi penjual, minta customer menunggu, akan diinformasikan lagi.",
+            "incomplete": "katakan data pesanan belum lengkap, minta customer melengkapi data yang kurang saja (lihat detail di bawah).",
+            "confirmed": "katakan pesanan sudah dikonfirmasi dan sedang diproses.",
+            "shipped": "katakan pesanan sudah dikirim.",
+            "completed": "katakan pesanan sudah selesai, tawarkan belanja lagi.",
+            "rejected": f"katakan pesanan ditolak. Alasan: {latest_order.rejection_reason or '-'}. Tawarkan pesan ulang.",
+        }.get(latest_order.status, "")
+        if latest_order.status == "rejected" and "batal" in (latest_order.rejection_reason or "").lower():
+            # ponytail: batal oleh customer (via chat) -> katakan dibatalkan, bukan ditolak
+            guidance = "katakan pesanan sudah dibatalkan atas permintaan customer; tawarkan pesan lagi."
+        if latest_order.status == "incomplete":
+            missing = []
+            if not latest_order.customer_phone:
+                missing.append("nomor handphone")
+            # alamat hanya ditanya jika layanan delivery tersedia dan alamat belum diisi; jika "Onsite", jangan tanya
+            if not latest_order.delivery_address:
+                missing.append("alamat pengiriman (hanya untuk pengiriman/delivery; jika pesan di tempat, isi 'Onsite')")
+            if not (latest_order.products or []):
+                missing.append("daftar produk")
+            if latest_order.delivery_address and latest_order.delivery_address.strip().lower() == "onsite":
+                missing = [m for m in missing if not m.startswith("alamat")]
+            guidance += f" Data yang masih kurang: {', '.join(missing) if missing else 'tidak ada — data sudah lengkap'}."
+        system_prompt += f"\n\nINFO STATUS PESANAN CUSTOMER SAAT INI: status='{latest_order.status}'. Jika customer bertanya status pesanan, {guidance}"
+        detail = {"products": latest_order.products, "total_price": float(latest_order.total_price) if latest_order.total_price else None,
+                  "delivery_address": latest_order.delivery_address, "customer_phone": latest_order.customer_phone}
+        system_prompt += (f"\n\nDETAIL PESANAN CUSTOMER: {detail}. Jika customer bertanya apa saja pesanannya, "
+                          "makan di tempat atau tidak, harga, atau data pesanan lainnya, JAWAB LANGSUNG dari data ini, jangan hanya menyebutkan status.")
+        if latest_order.status in ("rejected", "completed", "shipped"):
+            system_prompt += ("\n\nPENTING: Jangan mencatat pesanan baru kecuali customer secara eksplisit menyebut produk yang ingin dipesan ulang. "
+                              "Kalau customer hanya menanggapi/merespon pesan, balas singkat saja tanpa mencatat pesanan.")
+    system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum mencatat/mengubah pesanan, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
+                      "DILARANG menyatakan pesanan sudah tercatat/masuk sistem/diteruskan — status pencatatan ditambahkan sistem otomatis, bukan olehmu. "
+                      "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi. "
+                      "Tombol konfirmasi dipasang sistem otomatis di bawah pesanmu bila diperlukan — DILARANG membuat/menyebut tombol atau callback_data sendiri, cukup arahkan customer menekan tombol 1x bila INFO TOMBOL menyatakan AKTIF. "
+                      "\nATURAN BATAL: pesanan HANYA boleh batal bila customer eksplisit minta + sudah mengonfirmasi. "
+                      "JANGAN pernah membatalkan sepihak atau menawarkan pembatalan atas inisiatif sendiri.")
+    cancel_asked = False
+    # ponytail: state machine slot pemesanan (1 pertanyaan/turn). extract dipindah ke sini
+    existing = (db.query(ExtractedOrder)
+                .join(Message, Message.id == ExtractedOrder.message_id)
+                .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id),
+                        ExtractedOrder.status.in_(["pending", "incomplete"]))
+                .order_by(desc(ExtractedOrder.created_at)).first())
+    existing_summary = None
+    if existing:
+        existing_summary = {
+            "products": existing.products, "total_price": float(existing.total_price) if existing.total_price else None,
+            "delivery_address": existing.delivery_address, "customer_phone": existing.customer_phone,
+        }
+    try:
+        order = gemini_service.extract_order(api_key, text, history, existing_summary, (file_context or "") + "\n" + (bot.system_prompt or ""))
+    except Exception:
+        order = None
+
+    slot = None
+    slot_q = ""
+    skip_ai = False
+    if not pending_photo and not payment.is_cancel_intent(text) and not (order and order_is_confirmed(order)):
+        _vprods = (order.get("products") if order else None) or (existing.products if existing else None) or []
+        if _vprods:
+            _vphone = (order.get("customer_phone") if order else None) or (existing.customer_phone if existing else None)
+            _vaddr = (order.get("delivery_address") if order else None) or (existing.delivery_address if existing else None)
+            _noqty = next((p.get("product_name", "produk") for p in _vprods if not (p.get("quantity") or 0)), "")
+            _onsite, _deliv = payment.service_options((file_context or "") + "\n" + (bot.system_prompt or ""))
+            if _noqty:
+                slot, slot_q = "qty", f"{_noqty} mau beli berapa pcs, Kak?"
+            elif not (_vphone or "").strip():
+                slot, slot_q = "phone", "Boleh minta nomor HP-nya ya Kak?"
+            elif not (_vaddr or "").strip():
+                _recent = " ".join([text] + [h["text"] for h in history[-6:] if h.get("role") == "user"]).lower()
+                if _onsite and _deliv:
+                    if payment.mentions_delivery(_recent):
+                        slot, slot_q = "address", "Minta alamat lengkapnya ya Kak untuk pengiriman."
+                    else:
+                        slot, slot_q = "service", "Mau makan di tempat, ambil di toko, atau dikirim online, Kak?"
+                elif _deliv:
+                    slot, slot_q = "address", "Minta alamat lengkapnya ya Kak untuk pengiriman."
+                elif not _onsite:
+                    slot, slot_q = "service", "Mau makan di tempat, ambil di toko, atau dikirim online, Kak?"
+                # onsite-only: extract mengisi Onsite sendiri -> lanjut konfirmasi
+            if slot and payment.user_asked_question(text):
+                system_prompt += ("\nTUGAS TURN INI: jawab pesan customer MAKSIMAL 2 kalimat pendek. "
+                                  "DILARANG bertanya apa pun, meringkas pesanan, atau menyinggung pembayaran/tombol.")
+            elif slot is None and order and not order_is_confirmed(order):
+                _svc = "Ambil di toko" if _onsite and not _deliv else ("Pengiriman online" if _deliv and not _onsite else "")
+                system_prompt += ("\nTUGAS TURN INI: semua data pesanan sudah lengkap. "
+                                  "Tulis ringkasannya (produk, jumlah, harga bila ada, note, layanan"
+                                  + (f": {_svc}" if _svc else "") + ") + akhiri 'Benar, Kak?'. "
+                                  "Bila layanan makan/ambil di tempat: tulis marker [[LOC: alamat persis dari info toko]] 1x (jangan tulis alamat manual); bila online: JANGAN sertakan alamat/link. "
+                                  "JANGAN tanya apa pun lagi, JANGAN singgung pembayaran/tombol.")
+            skip_ai = bool(slot) and not payment.user_asked_question(text)
+    ordering_active = bool(slot or (order and not order_is_confirmed(order)))
+    data_complete = payment.order_data_complete(latest_order)
+    if bot.payment_info and data_complete and latest_order.status in ("pending", "incomplete") and not ordering_active:
+        total_str = f"Rp{float(latest_order.total_price):,.0f}".replace(",", ".")
+        system_prompt += ("\n\nTAHAP PEMBAYARAN: Data pesanan customer sudah lengkap. "
+                          "Tegaskan dan ingatkan customer agar segera membayar sekarang. "
+                          f"Total yang harus dibayar: {total_str}. "
+                          "Customer melihat tombol pilihan metode pembayaran di bawah pesan. "
+                          "JANGAN uraikan detail tiap metode (nomor rekening, QRIS, cash) dalam teks — "
+                          "cukup sebutkan total, minta customer menekan salah satu tombol, dan ingatkan kirim bukti bayar. "
+                          "Detail tiap metode hanya dijawab bila customer bertanya eksplisit via teks, dari: " + bot.payment_info)
+        if not latest_order.payment_proof_path:
+            system_prompt += ("\n\nPENGINGAT BUKTI BAYAR: Customer belum mengirim bukti pembayaran. "
+                              "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
+                              "bukti pembayaran di chat ini sebelum pesanan diproses. "
+                              "Ikuti gaya bahasa pada system prompt.")
+    has_payment_info = bool((bot.payment_info or "").strip())
+    has_qris = bool(bot.qris_image_path)
+    pay_state = f"ada: {bot.payment_info.strip()}" if has_payment_info else "KOSONG (penjual belum mengisi info pembayaran)"
+    qris_state = "TERSEDIA (gambar QRIS penjual sudah diupload)" if has_qris else "TIDAK TERSEDIA (penjual belum upload gambar QRIS)"
+    cash_state = "TERSEDIA" if bot.cash_enabled else "TIDAK TERSEDIA"
+    system_prompt += (
+        "\n\nINFO PEMBAYARAN (ground truth, prioritas tertinggi untuk topik bayar): "
+        f"payment_info={pay_state}; qris_image={qris_state}; cash={cash_state}."
+        "\nATURAN PEMBAYARAN (wajib, kalahkan instruksi lain): "
+        "1. Jawab bayar/transfer/rekening/nomor rekening/QRIS HANYA dari info di atas. "
+        "2. DILARANG mengarang nomor rekening/bank/VA/QRIS. "
+        "3. Tautan toko/website di system prompt BUKAN metode pembayaran — JANGAN sebut/arahkan ke link toko saat ditanya pembayaran, "
+        "kecuali payment_info di atas eksplisit memuat link itu sebagai cara bayar. "
+        "4. Ditanya rekening: payment_info ada -> kutip persis; kosong -> katakan info pembayaran belum diisi penjual, minta tunggu, jangan arahkan ke website. "
+        "5. Ditanya QRIS: TERSEDIA -> katakan QRIS tersedia dan gambarnya menyusul tepat setelah pesan ini; "
+        "TIDAK TERSEDIA -> katakan QRIS belum tersedia, tawarkan payment_info bila ada, bila kosong katakan tunggu info penjual. "
+        "6. Setiap customer bertanya soal pembayaran/cara bayar (umum, bukan spesifik satu metode): "
+        "lihat INFO TOMBOL di bawah — bila AKTIF jawab SINGKAT + sebut tombol 1x "
+        "(contoh: 'Gampang, Kak! Silakan pilih metode pembayaran lewat tombol di bawah ya'); "
+        "bila NONAKTIF JANGAN sebut/janjikan tombol sama sekali, cukup sebut metode yang tersedia + ingatkan kirim bukti bayar. "
+        "JANGAN uraikan daftar/detail tiap metode dalam teks kecuali customer meminta eksplisit. "
+        "Bila semua metode kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
+        "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada. "
+        "7. Ditanya bayar tunai/cash/COD: TERSEDIA -> katakan bisa bayar tunai saat pesanan diterima; "
+        "TIDAK TERSEDIA -> jangan tawarkan tunai, arahkan ke metode yang ada. "
+    )
+    # ponytail: SATU penentu tombol (backend). AI tinggal ikut verdict -> janji tombol tak pernah meleset.
+    # pembayaran didorong hanya di luar alur pengisian order (nanti, setelah tercatat)
+    show_pay = bool(payment.available_methods(bot)
+                    and (payment.mentions_payment(text)
+                         or (not ordering_active and payment.payment_stage_active(bot, latest_order))))
+    pay_kb = payment.payment_keyboard(bot) if show_pay else None
+    system_prompt += ("\nINFO TOMBOL: " + ("AKTIF — tombol metode tampil di bawah pesanmu." if show_pay
+                                           else "NONAKTIF — tidak ada tombol; DILARANG menyebut/menjanjikan tombol."))
+
+    image_rows = (db.query(UploadedFile)
+                  .filter(UploadedFile.bot_id == bot.id, UploadedFile.file_type.in_(config.IMAGE_EXTS))
+                  .order_by(UploadedFile.created_at.asc()).all())
+    # ponytail: AI baca Drive otomatis — daftar nama file Drive masuk prompt, tanpa set manual
+    drive_names: list[str] = []
+    drive_videos: list[str] = []
+    try:
+        for ds in db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all():
+            try:
+                drive_names.extend(i["name"] for i in gsvc.list_drive_images(ds) if i.get("name"))
+            except Exception:
+                pass
+            try:
+                drive_videos.extend(v["name"] for v in gsvc.list_drive_videos(ds) if v.get("name"))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if image_rows or drive_names:
+        lines = "\n".join(f"- {(r.label or r.filename)} | {r.filename}" for r in image_rows)
+        if drive_names:
+            lines += ("\n" if lines else "") + "\n".join(f"- {n}" for n in drive_names[:100])
+        system_prompt += (
+            "\n\nDAFTAR GAMBAR TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + lines + "\n"
+            "ATURAN GAMBAR (wajib):\n"
+            "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: label]` dengan label PERSIS seperti di daftar untuk tiap gambar yang cocok. Boleh juga pakai filename bila label kosong.\n"
+            "2. DILARANG mengarang label/filename yang tidak ada di daftar.\n"
+            "3. Tidak ada gambar yang cocok -> katakan belum tersedia, JANGAN tulis marker.\n"
+            "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar.\n"
+            "5. Gambar tidak ada di daftar -> JANGAN berjanji mengirim foto ('ini fotonya', 'saya kirim ulang'); cukup SATU pesan singkat bahwa gambarnya belum tersedia.\n"
+            "6. Customer menebak nama ('ini X bukan?', 'kalau ini?') -> cocokkan X dengan nama file foto/daftar; benarkan hanya bila cocok, koreksi bila tidak. Jangan asal setuju."
+        )
+    if drive_videos:
+        vlines = "\n".join(f"- {n}" for n in drive_videos[:50])
+        system_prompt += (
+            "\n\nDAFTAR VIDEO TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + vlines + "\n"
+            "ATURAN VIDEO (wajib):\n"
+            "1. Jika customer meminta video, jawab singkat, lalu tambahkan baris `[VID: nama]` dengan nama PERSIS seperti di daftar untuk tiap video yang cocok.\n"
+            "2. DILARANG mengarang nama yang tidak ada di daftar.\n"
+            "3. Tidak ada video yang cocok -> katakan belum tersedia, JANGAN tulis marker."
+        )
+
+    start = time.time()
+    # ---- PEMBATALAN PESANAN (backend yg eksekusi; AI hanya merangkai kata) ----
+    last_assistant = (db.query(Message)
+                      .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                              Message.response_text != "")
+                      .order_by(desc(Message.id)).first())
+    cancel_armed = bool(last_assistant and payment.CANCEL_MARK in (last_assistant.response_text or ""))
+    if cancel_armed and payment.classify_cancel_reply(text) == "confirm":
+        open_order = open_order_for_chat(db, bot_id, chat_id)
+        t0 = time.time()
+        if open_order:
+            open_order.status = "rejected"
+            open_order.rejection_reason = "Dibatalkan oleh customer"
+            try:
+                # ponytail: stok yg dulu dikurangi pesanan ini dikembalikan
+                sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
+                for _p in (open_order.products or []):
+                    for _s in sheets:
+                        try:
+                            if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), int(_p.get("quantity", 0) or 0)):
+                                break
+                        except Exception:
+                            continue
+                open_order.stock_deducted = False
+            except Exception:
+                pass
+            db.commit()
+            total = float(open_order.total_price) if open_order.total_price is not None else None
+            cancel_text = ("Baik, pesanan Kakak sudah dibatalkan ya."
+                           + (f" Total Rp{total:,.0f} tidak perlu dibayar.".replace(",", ".") if total else "")
+                           + " Kalau mau pesan lagi, tinggal bilang saja, Kak!")
+        else:
+            cancel_text = "Sepertinya sudah tidak ada pesanan aktif yang bisa dibatalkan ya, Kak. Mau pesan yang lain?"
+        try:
+            res_cancel = telegram_api.send_message(token, chat_id, cancel_text)
+        except Exception:
+            res_cancel = None
+        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                      message_text=_strip_reply_ctx(text, reply_ctx),
+                      response_text=cancel_text, extracted_data=None,
+                      response_time=round(time.time() - t0, 2), model_used="cancel",
+                      telegram_message_id=inbound_tg_id,
+                      telegram_response_id=_tg_msg_id(res_cancel),
+                      reply_to_text=inbound_quote)
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        emit_conversation(db, bot_id, uid, msg)
+        return {"ok": True}
+    if cancel_armed and payment.classify_cancel_reply(text) == "abort":
+        # ponytail: customer menekan "Jangan batalkan" (atau mengetik penolakan) -> kunci, tanpa AI
+        keep_text = "Baik, pesanan Kakak tidak jadi dibatalkan dan tetap kami proses ya."
+        try:
+            res_keep = telegram_api.send_message(token, chat_id, keep_text)
+        except Exception:
+            res_keep = None
+        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                      message_text=_strip_reply_ctx(text, reply_ctx),
+                      response_text=keep_text, extracted_data=None,
+                      response_time=round(time.time() - start, 2), model_used="cancel",
+                      telegram_message_id=inbound_tg_id,
+                      telegram_response_id=_tg_msg_id(res_keep),
+                      reply_to_text=inbound_quote)
+        db.add(msg)
+        db.commit()
+        db.refresh(msg)
+        emit_conversation(db, bot_id, uid, msg)
+        return {"ok": True}
+    if payment.is_cancel_intent(text) and payment.classify_cancel_reply(text) != "abort":
+        open_order = open_order_for_chat(db, bot_id, chat_id)
+        if open_order:
+            prods = ", ".join(f"{_p.get('product_name')} x{_p.get('quantity', 1) or 1}" for _p in (open_order.products or [])) or "-"
+            total = float(open_order.total_price) if open_order.total_price is not None else None
+            system_prompt += (f"\n\nKONTEKS PEMBATALAN: customer meminta membatalkan SELURUH pesanan aktif "
+                              f"({prods}" + (f"; total Rp{total:,.0f}".replace(",", ".") if total else "") + "). "
+                              f"JANGAN batalkan dulu. Ulangi ringkasannya + tanyakan konfirmasi, dan AKHIRI dengan kalimat persis: '{payment.CANCEL_ASK}' "
+                              "Jangan tulis apa pun setelah kalimat itu.")
+        else:
+            system_prompt += ("\n\nKONTEKS: customer menyebut pembatalan tapi tidak ada pesanan aktif. "
+                              "Katakan tidak ada pesanan aktif yang bisa dibatalkan.")
+        cancel_asked = True
+    # ponytail: tombol konfirmasi deterministik backend — AI tak boleh mengarang callback_data
+    if cancel_asked and open_order_for_chat(db, bot_id, chat_id):
+        confirm_kb = payment.cancel_confirm_keyboard()
+        system_prompt += ("\nINFO TOMBOL BATAL: AKTIF — tombol Ya/Jangan tampil di bawah pesanmu. "
+                          "Tetap akhiri dengan kalimat persis CANCEL_ASK dan sebut tombolnya 1x.")
+    elif slot == "service":
+        confirm_kb = payment.service_keyboard()
+        system_prompt += ("\nINFO TOMBOL LAYANAN: AKTIF — 3 tombol pilihan tampil di bawah pesanmu. "
+                          "Sebut 1x agar customer menekan tombol, jangan suruh mengetik.")
+    elif slot is None and order and not order_is_confirmed(order):
+        confirm_kb = payment.order_confirm_keyboard()
+        system_prompt += ("\nINFO TOMBOL KONFIRMASI: AKTIF — tombol Benar/Ubah tampil di bawah ringkasanmu. "
+                          "Akhiri 'Benar, Kak?' + sebut 1x agar customer menekan tombol, jangan suruh mengetik.")
+    else:
+        confirm_kb = None
+        system_prompt += ("\nINFO TOMBOL KONFIRMASI: NONAKTIF — tidak ada tombol konfirmasi; "
+                          "DILARANG menyebut/menjanjikan tombol. JANGAN tulis callback_data apa pun.")
+    final_kb = payment.merge_keyboards(confirm_kb, pay_kb)
+    if skip_ai:
+        # ponytail: turn slot tanpa pertanyaan user -> hemat 1 call AI, kirim pertanyaan slot saja
+        reply, model_used = "", "slot"
+    else:
+        try:
+            if pending_photo:
+                try:
+                    with open(config.resolve_upload_path(pending_photo.media_path), "rb") as f:
+                        img_bytes = f.read()
+                    reply, model_used = gemini_service.answer_with_image(
+                        api_key, system_prompt, file_context, history, img_bytes, text)
+                except Exception:
+                    reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
+            else:
+                reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
+            m_coords = re.search(r"\(koordinat:\s*([^)]+)\)", bot.system_prompt or "")
+            reply = location_service.enrich_with_maps(reply, m_coords.group(1).strip() if m_coords else None)
+        except Exception:
+            reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
+    if slot and not cancel_asked:
+        # ponytail: 1 bubble = jawaban AI (bila ada) + 1 pertanyaan slot; tanpa slot: reply AI utuh
+        reply = f"{reply}\n\n{slot_q}".strip() if reply else slot_q
+    response_time = round(time.time() - start, 2)
+
+    clean_reply, wanted, wanted_videos = image_markers.parse_media_markers(reply)
+    # ponytail: final_kb = confirm deterministik + pay, dihitung sebelum AI -> pakai yg sama di semua send
+    paths = []
+    tmp_files = []
+    sent_labels = []
+    for name in wanted:
+        # ponytail: toleransi format lama "label | filename" -> coba bagian filename juga
+        candidates = [name] + ([name.rsplit("|", 1)[-1].strip()] if "|" in name else [])
+        row = None
+        for cand in candidates:
+            row = (db.query(UploadedFile)
+                   .filter(UploadedFile.bot_id == bot.id,
+                           ((UploadedFile.label == cand) | (UploadedFile.filename == cand)),
+                           UploadedFile.file_type.in_(config.IMAGE_EXTS)).first())
+            if row:
+                break
+        if row:
+            p = config.resolve_upload_path(row.file_path)
+            if p and os.path.exists(p):
+                paths.append(p)
+                sent_labels.append(row.label or row.filename)
+    if wanted:
+        have = set(os.path.basename(p) for p in paths)
+        missing = [w for w in wanted if w not in have]
+        if missing:
+            try:
+                dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
+                for ds in dsources:
+                    try:
+                        items = gsvc.list_drive_images(ds)
+                        names = [i["name"] for i in items]
+                        for w in list(missing):
+                            hit = gsvc.fuzzy_find(w, names)
+                            if not hit:
+                                continue
+                            fid = next(i["id"] for i in items if i["name"] == hit)
+                            data = gsvc.download_drive_image(fid)
+                            tmp = f"/tmp/curabot-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
+                            with open(tmp, "wb") as _f:
+                                _f.write(data)
+                            # ponytail: JANGAN kirim di sini; kumpulkan lalu kirim sekali di bawah
+                            paths.append(tmp)
+                            tmp_files.append(tmp)
+                            sent_labels.append(hit)
+                            missing.remove(w)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+    # ponytail: kirim sekali; gagal/tidak-tersedia -> SATU pesan gabungan (anti dobel)
+    image_note_sent = False
+    note_tg_id = None
+    if paths:
+        delivered = 0
+        for i in range(0, len(paths), 10):
+            chunk = paths[i:i + 10]
+            chunk_labels = sent_labels[i:i + 10]
+            try:
+                if len(chunk) == 1:
+                    res = telegram_api.send_photo(token, chat_id, chunk[0])
+                    _remember_photo_msg((res or {}).get("message_id"), chunk_labels[0] if chunk_labels else "")
+                else:
+                    try:
+                        results = telegram_api.send_media_group(token, chat_id, chunk)
+                        for r, lb in zip(results or [], chunk_labels):
+                            _remember_photo_msg((r or {}).get("message_id"), lb)
+                    except Exception:
+                        for p, lb in zip(chunk, chunk_labels):
+                            res1 = telegram_api.send_photo(token, chat_id, p)
+                            _remember_photo_msg((res1 or {}).get("message_id"), lb)
+                delivered += len(chunk)
+            except Exception:
+                for p, lb in zip(chunk, chunk_labels):
+                    try:
+                        res1 = telegram_api.send_photo(token, chat_id, p)
+                        _remember_photo_msg((res1 or {}).get("message_id"), lb)
+                        delivered += 1
+                    except Exception:
+                        continue
+        for t in tmp_files:
+            try:
+                os.remove(t)
+            except OSError:
+                pass
+        if delivered:
+            _remember_sent_images(chat_id, sent_labels or wanted)
+        else:
+            note = "Maaf, gambar gagal dikirim. Coba lagi ya."
+            try:
+                res_note = telegram_api.send_message(token, chat_id,
+                                                     f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                                     reply_markup=final_kb)
+                note_tg_id = _tg_msg_id(res_note)
+                image_note_sent = True
+            except Exception:
+                pass
+    elif wanted:
+        note = "Maaf, gambar untuk itu belum tersedia ya."
+        try:
+            res_note2 = telegram_api.send_message(token, chat_id,
+                                                  f"{clean_reply}\n\n{note}" if clean_reply else note,
+                                                  reply_markup=final_kb)
+            note_tg_id = _tg_msg_id(res_note2)
+            image_note_sent = True
+        except Exception:
+            pass
+
+    # ponytail: video Drive kirim-file saja (tanpa analisis AI); maks 3/turn anti sedot kuota
+    video_note = ""
+    video_paths: list[str] = []
+    if wanted_videos:
+        video_labels: list[str] = []
+        video_tmp: list[str] = []
+        try:
+            dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
+        except Exception:
+            dsources = []
+        for w in wanted_videos[:3]:
+            hit = fid = None
+            for ds in dsources:
+                try:
+                    items = gsvc.list_drive_videos(ds)
+                except Exception:
+                    continue
+                hit = gsvc.fuzzy_find(w, [i["name"] for i in items])
+                if hit:
+                    fid = next((i["id"] for i in items if i["name"] == hit), None)
+                    break
+            if not hit or not fid:
+                continue
+            try:
+                data = gsvc.download_drive_file(fid, gsvc.MAX_DRIVE_VIDEO_BYTES)
+                # ponytail: basename Drive milik owner; prefix waktu anti tabrakan /tmp
+                tmp = f"/tmp/curabot-vid-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
+                with open(tmp, "wb") as _f:
+                    _f.write(data)
+                video_paths.append(tmp)
+                video_labels.append(hit)
+                video_tmp.append(tmp)
+            except Exception:
+                continue
+        delivered_v = 0
+        for p, lb in zip(video_paths, video_labels):
+            try:
+                telegram_api.send_document(token, chat_id, p, lb)
+                delivered_v += 1
+            except Exception:
+                continue
+        for t in video_tmp:
+            try:
+                os.remove(t)
+            except OSError:
+                pass
+        if not delivered_v:
+            video_note = "Maaf, video untuk itu belum tersedia ya."
+            if image_note_sent:
+                # ponytail: teks utama sudah terkirim via note gambar -> note video terpisah
+                try:
+                    telegram_api.send_message(token, chat_id, video_note, reply_markup=final_kb)
+                except Exception:
+                    pass
+                video_note = ""
+
+    # customer minta qris & ada gambar QRIS -> kirim gambarnya
+    if bot.qris_image_path and "qris" in text.lower():
+        try:
+            telegram_api.send_photo(token, chat_id, config.resolve_upload_path(bot.qris_image_path), caption="QRIS pembayaran")
+            try:
+                telegram_api.send_message(token, chat_id, "Itu gambar QRIS resmi dari penjual di atas ya. Setelah membayar, kirimkan foto/screenshot bukti pembayaran di chat ini.")
+            except Exception:
+                pass
+        except Exception:
+            telegram_api.send_message(token, chat_id, "Maaf, gambar QRIS gagal dikirim. Coba minta lagi atau hubungi penjual ya.")
+
+    # ponytail: existing/order sudah dihitung pre-AI (mesin slot); di sini hanya kunci mutasi turn batal
+    if cancel_asked:
+        # ponytail: turn niat-batal -> AI hanya diminta tanya konfirmasi; mutasi order dilarang
+        order = None
+
+    msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                  message_text=_strip_reply_ctx(text, reply_ctx),
+                  response_text=reply, extracted_data=order, response_time=response_time,
+                  model_used=model_used, telegram_message_id=inbound_tg_id,
+                  telegram_response_id=note_tg_id, reply_to_text=inbound_quote)
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    # ponytail: hanya simpan/update order setelah customer mengonfirmasi ringkasan dari AI
+    saved_order = None
+    record_note = ""
+    _kb_svc = (file_context or "") + "\n" + (bot.system_prompt or "")
+    _addr_default = "Onsite" if payment.service_options(_kb_svc) == (True, False) else None
+    if order and existing and order_is_confirmed(order):
+        # 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
+        new_products = order.get("products") or existing.products
+        # ponytail: note per produk — bila AI menghilangkan note lama untuk produk yg sama, pulihkan
+        try:
+            old_notes = {str(p.get("product_name", "")).lower(): p.get("note") for p in (existing.products or [])}
+            for p in new_products:
+                if not p.get("note"):
+                    old = old_notes.get(str(p.get("product_name", "")).lower())
+                    if old:
+                        p["note"] = old
+        except Exception:
+            pass
+        existing.products = new_products
+        existing.total_price = order.get("total_price") if order.get("total_price") is not None else existing.total_price
+        existing.delivery_address = order.get("delivery_address") or existing.delivery_address or _addr_default
+        existing.customer_phone = order.get("customer_phone") or existing.customer_phone
+        if not existing.customer_name and order.get("customer_name"):
+            existing.customer_name = order.get("customer_name")
+        # ponytail: status TIDAK diubah dari sisi chat — hanya creator yang boleh mengubah status order
+        db.commit()
+        saved_order = existing
+        record_note = "✅ Pesanan sudah diperbarui di sistem."
+    elif order and order_is_confirmed(order):
+        status = "pending" if order.get("total_price") is not None else "incomplete"
+        new_order = ExtractedOrder(
+            bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
+            customer_name=order.get("customer_name") or customer_name,
+            products=order["products"], total_price=order.get("total_price"),
+            delivery_address=order.get("delivery_address") or _addr_default, customer_phone=order.get("customer_phone"),
+        )
+        db.add(new_order)
+        db.commit()
+        db.refresh(new_order)
+        saved_order = new_order
+        record_note = f"✅ Pesanan sudah tercatat di sistem (No. #{new_order.id})."
+        try:
+            excel_service.append_order(bot_id, order, uid, status)
+        except Exception:
+            pass
+        try:
+            sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
+            for _p in (saved_order.products or []):
+                for _s in sheets:
+                    try:
+                        if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), -int(_p.get("quantity", 0) or 0)):
+                            break
+                    except Exception:
+                        continue
+            saved_order.stock_deducted = True
+            db.commit()
+        except Exception:
+            pass
+
+    if not image_note_sent:
+        send_text = (clean_reply if clean_reply else ("Berikut videonya ya." if video_paths else "Berikut gambarnya ya."))
+        if video_note:
+            send_text = f"{send_text}\n\n{video_note}" if send_text else video_note
+        if record_note:
+            # ponytail: klaim "tercatat" HANYA dari backend yg tahu DB — bukan dari tebakan AI
+            send_text = f"{send_text}\n\n{record_note}"
+        elif not saved_order and not existing and re.search(
+                r"tercatat|masuk sistem|diteruskan ke (tim|dapur)|telah dicatat", send_text, re.IGNORECASE):
+            # ponytail: AI klaim tercatat padahal tak ada yg tersimpan -> ralat di pesan yg sama
+            send_text += ("\n\n⚠️ Ralat: pesanan di atas belum masuk sistem — "
+                          "mohon jawab konfirmasi ('Benar') agar kami catat.")
+        try:
+            res_main = telegram_api.send_message(token, chat_id, send_text, reply_markup=final_kb)
+            rid = _tg_msg_id(res_main)
+            if rid:
+                msg.telegram_response_id = rid
+                db.commit()
+        except Exception:
+            pass
+
+    # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
+    if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):
+        try:
+            text_r = payment.reminder_text(bot, saved_order)
+            res_r = telegram_api.send_message(token, chat_id, text_r,
+                                              reply_markup=payment.payment_keyboard(bot))
+            db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                           message_text="[pengingat pembayaran otomatis]", response_text=text_r,
+                           telegram_message_id=inbound_tg_id,
+                           telegram_response_id=_tg_msg_id(res_r)))
+            db.commit()
+        except Exception:
+            pass
+    elif not saved_order and existing and not data_complete and order and not slot:
+        # order belum terkonfirmasi, tapi ekstraksi turn ini menunjukkan data sudah lengkap.
+        # ponytail: saat slot pengisian aktif, pembayaran nanti setelah tercatat -> jangan ingatkan dulu
+        merged = SimpleNamespace(
+            customer_name=order.get("customer_name") or existing.customer_name,
+            customer_phone=order.get("customer_phone") or existing.customer_phone,
+            products=order.get("products") or existing.products,
+            total_price=order.get("total_price") if order.get("total_price") is not None else existing.total_price,
+            delivery_address=order.get("delivery_address") or existing.delivery_address,
+            status=existing.status, payment_proof_path=existing.payment_proof_path)
+        if payment.payment_stage_active(bot, merged):
+            reminded = (db.query(Message)
+                        .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
+                                Message.response_text.like(payment.REMINDER_PREFIX + "%"))
+                        .first())
+            if not reminded:
+                try:
+                    text_r = payment.reminder_text(bot, merged)
+                    res_r2 = telegram_api.send_message(token, chat_id, text_r,
+                                                       reply_markup=payment.payment_keyboard(bot))
+                    db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
+                                   message_text="[pengingat pembayaran otomatis]", response_text=text_r,
+                                   telegram_message_id=inbound_tg_id,
+                                   telegram_response_id=_tg_msg_id(res_r2)))
+                    db.commit()
+                except Exception:
+                    pass
+
+    emit_conversation(db, bot_id, uid, msg)
+    return {"ok": True}
+
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     if config.TELEGRAM_WEBHOOK_SECRET:
@@ -1334,10 +2016,10 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         if not hmac.compare_digest(provided, config.TELEGRAM_WEBHOOK_SECRET):
             raise HTTPException(403, "Invalid webhook secret")
     payload = await request.json()
-    # tap pada tombol metode pembayaran -> jawab deterministik tanpa AI
+    # tap tombol inline -> jawab deterministik; pay:* tanpa AI, cfm:* jadi teks sintetis 1 jalur
     cb = payload.get("callback_query") or {}
     cb_data = cb.get("data") or ""
-    if cb_data.startswith("pay:"):
+    if cb_data.startswith("pay:") or payment.is_confirm_callback(cb_data):
         cb_chat_id = cb.get("message", {}).get("chat", {}).get("id")
         try:
             telegram_api.answer_callback_query(config.TELEGRAM_TOKEN, cb.get("id"))
@@ -1346,6 +2028,23 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         binding = db.query(BotChat).filter(BotChat.chat_id == str(cb_chat_id)).first()
         bot = (db.query(Bot).filter(Bot.id == binding.bot_id, Bot.status == "active").first()
                if binding else None)
+        if not bot:
+            return {"ok": True}
+        if payment.is_confirm_callback(cb_data):
+            # ponytail: hapus tombol pesan lama biar tak ditekan 2x, lalu proses spt ketikan
+            try:
+                telegram_api.edit_message_reply_markup(
+                    config.TELEGRAM_TOKEN, cb_chat_id,
+                    int((cb.get("message") or {}).get("message_id") or 0))
+            except Exception:
+                pass
+            synth = payment.CALLBACK_TEXT.get(cb_data)
+            if not synth:
+                return {"ok": True}
+            cb_from = cb.get("from", {})
+            cb_uid = str(cb_from.get("id") or cb_chat_id)
+            cb_name = " ".join(filter(None, [cb_from.get("first_name"), cb_from.get("last_name")])) or None
+            return _handle_customer_text(db, bot, binding, cb_chat_id, cb_uid, cb_name, synth)
         if bot:
             kind, text = payment.callback_response(bot, cb_data)
             try:
@@ -1577,644 +2276,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     if not bot:
         return {"ok": True}
     bot_id = bot.id
-    if (binding.mode or "ai") == "manual":
-        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                      sender="user", message_text=_strip_reply_ctx(text, reply_ctx), response_text="",
-                      telegram_message_id=inbound_tg_id, reply_to_text=inbound_quote)
-        db.add(msg)
-        db.commit()
-        db.refresh(msg)
-        emit_conversation(db, bot_id, uid, msg)
-        return {"ok": True}
-    api_key = security.decrypt(bot.api_key_encrypted)
-
-    # foto sebelumnya ditanya balik? -> jawaban teks user ini merujuk ke foto itu
-    pending_photo = (db.query(Message)
-                     .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
-                             Message.media_path.isnot(None),
-                             Message.response_text == gemini_service.PHOTO_ASK_BACK)
-                     .order_by(desc(Message.id)).first())
-    if pending_photo:
-        answered = (db.query(Message)
-                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
-                            Message.id > pending_photo.id, Message.media_path.is_(None))
-                    .first())
-        if answered:
-            pending_photo = None
-
-    history_rows = (db.query(Message)
-                    .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id))
-                    .order_by(desc(Message.created_at)).limit(5).all())
-    history = []
-    for r in reversed(history_rows):
-        history.append({"role": "user", "text": r.message_text})
-        history.append({"role": "model", "text": r.response_text})
-
-    files = (db.query(UploadedFile)
-             .filter(UploadedFile.bot_id == bot_id, UploadedFile.extracted_text != "").all())
-    file_context = "\n\n".join((f.extracted_text or "")[:3000] for f in files)[:6000]
-    try:
-        gctx = gsvc.sheet_context(bot.id, db)
-        if gctx:
-            file_context = (file_context + "\n\n" + gctx)[:15000]
-    except Exception:
-        pass
-    try:
-        # ponytail: docs Drive terakhir -> bila overflow, konten baru yg terpotong duluan
-        dctx = gsvc.drive_docs_context(bot.id, db)
-        if dctx:
-            file_context = (file_context + "\n\n" + dctx)[:15000]
-    except Exception:
-        pass
-
-    # status order terakhir untuk konteks jawaban AI
-    latest_order = (db.query(ExtractedOrder)
-                    .join(Message, Message.id == ExtractedOrder.message_id)
-                    .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id))
-                    .order_by(desc(ExtractedOrder.created_at)).first())
-    system_prompt = bot.system_prompt
-    if latest_order:
-        guidance = {
-            "pending": "katakan pesanan sedang menunggu konfirmasi penjual, minta customer menunggu, akan diinformasikan lagi.",
-            "incomplete": "katakan data pesanan belum lengkap, minta customer melengkapi data yang kurang saja (lihat detail di bawah).",
-            "confirmed": "katakan pesanan sudah dikonfirmasi dan sedang diproses.",
-            "shipped": "katakan pesanan sudah dikirim.",
-            "completed": "katakan pesanan sudah selesai, tawarkan belanja lagi.",
-            "rejected": f"katakan pesanan ditolak. Alasan: {latest_order.rejection_reason or '-'}. Tawarkan pesan ulang.",
-        }.get(latest_order.status, "")
-        if latest_order.status == "rejected" and "batal" in (latest_order.rejection_reason or "").lower():
-            # ponytail: batal oleh customer (via chat) -> katakan dibatalkan, bukan ditolak
-            guidance = "katakan pesanan sudah dibatalkan atas permintaan customer; tawarkan pesan lagi."
-        if latest_order.status == "incomplete":
-            missing = []
-            if not latest_order.customer_phone:
-                missing.append("nomor handphone")
-            # alamat hanya ditanya jika layanan delivery tersedia dan alamat belum diisi; jika "Onsite", jangan tanya
-            if not latest_order.delivery_address:
-                missing.append("alamat pengiriman (hanya untuk pengiriman/delivery; jika pesan di tempat, isi 'Onsite')")
-            if not (latest_order.products or []):
-                missing.append("daftar produk")
-            if latest_order.delivery_address and latest_order.delivery_address.strip().lower() == "onsite":
-                missing = [m for m in missing if not m.startswith("alamat")]
-            guidance += f" Data yang masih kurang: {', '.join(missing) if missing else 'tidak ada — data sudah lengkap'}."
-        system_prompt += f"\n\nINFO STATUS PESANAN CUSTOMER SAAT INI: status='{latest_order.status}'. Jika customer bertanya status pesanan, {guidance}"
-        detail = {"products": latest_order.products, "total_price": float(latest_order.total_price) if latest_order.total_price else None,
-                  "delivery_address": latest_order.delivery_address, "customer_phone": latest_order.customer_phone}
-        system_prompt += (f"\n\nDETAIL PESANAN CUSTOMER: {detail}. Jika customer bertanya apa saja pesanannya, "
-                          "makan di tempat atau tidak, harga, atau data pesanan lainnya, JAWAB LANGSUNG dari data ini, jangan hanya menyebutkan status.")
-        if latest_order.status in ("rejected", "completed", "shipped"):
-            system_prompt += ("\n\nPENTING: Jangan mencatat pesanan baru kecuali customer secara eksplisit menyebut produk yang ingin dipesan ulang. "
-                              "Kalau customer hanya menanggapi/merespon pesan, balas singkat saja tanpa mencatat pesanan.")
-    system_prompt += ("\n\nATURAN KONFIRMASI: Sebelum mencatat/mengubah pesanan, SELALU ulangi ringkasan lengkap pesanan (produk, jumlah, harga, dan catatan/note per item masing-masing) dan minta konfirmasi customer (\"Benar, Kak?\"). "
-                      "DILARANG menyatakan pesanan sudah tercatat/masuk sistem/diteruskan — status pencatatan ditambahkan sistem otomatis, bukan olehmu. "
-                      "Kalau customer meralat, jawab ringkasan baru dan minta konfirmasi lagi."
-                      "\nATURAN BATAL: pesanan HANYA boleh batal bila customer eksplisit minta + sudah mengonfirmasi. "
-                      "JANGAN pernah membatalkan sepihak atau menawarkan pembatalan atas inisiatif sendiri.")
-    cancel_asked = False
-    # ponytail: state machine slot pemesanan (1 pertanyaan/turn). extract dipindah ke sini
-    existing = (db.query(ExtractedOrder)
-                .join(Message, Message.id == ExtractedOrder.message_id)
-                .filter(ExtractedOrder.bot_id == bot_id, Message.chat_id == str(chat_id),
-                        ExtractedOrder.status.in_(["pending", "incomplete"]))
-                .order_by(desc(ExtractedOrder.created_at)).first())
-    existing_summary = None
-    if existing:
-        existing_summary = {
-            "products": existing.products, "total_price": float(existing.total_price) if existing.total_price else None,
-            "delivery_address": existing.delivery_address, "customer_phone": existing.customer_phone,
-        }
-    try:
-        order = gemini_service.extract_order(api_key, text, history, existing_summary, (file_context or "") + "\n" + (bot.system_prompt or ""))
-    except Exception:
-        order = None
-
-    slot = None
-    slot_q = ""
-    skip_ai = False
-    if not pending_photo and not payment.is_cancel_intent(text) and not (order and order_is_confirmed(order)):
-        _vprods = (order.get("products") if order else None) or (existing.products if existing else None) or []
-        if _vprods:
-            _vphone = (order.get("customer_phone") if order else None) or (existing.customer_phone if existing else None)
-            _vaddr = (order.get("delivery_address") if order else None) or (existing.delivery_address if existing else None)
-            _noqty = next((p.get("product_name", "produk") for p in _vprods if not (p.get("quantity") or 0)), "")
-            _onsite, _deliv = payment.service_options((file_context or "") + "\n" + (bot.system_prompt or ""))
-            if _noqty:
-                slot, slot_q = "qty", f"{_noqty} mau beli berapa pcs, Kak?"
-            elif not (_vphone or "").strip():
-                slot, slot_q = "phone", "Boleh minta nomor HP-nya ya Kak?"
-            elif not (_vaddr or "").strip():
-                _recent = " ".join([text] + [h["text"] for h in history[-6:] if h.get("role") == "user"]).lower()
-                if _onsite and _deliv:
-                    if payment.mentions_delivery(_recent):
-                        slot, slot_q = "address", "Minta alamat lengkapnya ya Kak untuk pengiriman."
-                    else:
-                        slot, slot_q = "service", "Mau makan di tempat, ambil di toko, atau dikirim online, Kak?"
-                elif _deliv:
-                    slot, slot_q = "address", "Minta alamat lengkapnya ya Kak untuk pengiriman."
-                elif not _onsite:
-                    slot, slot_q = "service", "Mau makan di tempat, ambil di toko, atau dikirim online, Kak?"
-                # onsite-only: extract mengisi Onsite sendiri -> lanjut konfirmasi
-            if slot and payment.user_asked_question(text):
-                system_prompt += ("\nTUGAS TURN INI: jawab pesan customer MAKSIMAL 2 kalimat pendek. "
-                                  "DILARANG bertanya apa pun, meringkas pesanan, atau menyinggung pembayaran/tombol.")
-            elif slot is None and order and not order_is_confirmed(order):
-                _svc = "Ambil di toko" if _onsite and not _deliv else ("Pengiriman online" if _deliv and not _onsite else "")
-                system_prompt += ("\nTUGAS TURN INI: semua data pesanan sudah lengkap. "
-                                  "Tulis ringkasannya (produk, jumlah, harga bila ada, note, layanan"
-                                  + (f": {_svc}" if _svc else "") + ") + akhiri 'Benar, Kak?'. "
-                                  "Bila layanan makan/ambil di tempat: tulis marker [[LOC: alamat persis dari info toko]] 1x (jangan tulis alamat manual); bila online: JANGAN sertakan alamat/link. "
-                                  "JANGAN tanya apa pun lagi, JANGAN singgung pembayaran/tombol.")
-            skip_ai = bool(slot) and not payment.user_asked_question(text)
-    ordering_active = bool(slot or (order and not order_is_confirmed(order)))
-    data_complete = payment.order_data_complete(latest_order)
-    if bot.payment_info and data_complete and latest_order.status in ("pending", "incomplete") and not ordering_active:
-        total_str = f"Rp{float(latest_order.total_price):,.0f}".replace(",", ".")
-        system_prompt += ("\n\nTAHAP PEMBAYARAN: Data pesanan customer sudah lengkap. "
-                          "Tegaskan dan ingatkan customer agar segera membayar sekarang. "
-                          f"Total yang harus dibayar: {total_str}. "
-                          "Customer melihat tombol pilihan metode pembayaran di bawah pesan. "
-                          "JANGAN uraikan detail tiap metode (nomor rekening, QRIS, cash) dalam teks — "
-                          "cukup sebutkan total, minta customer menekan salah satu tombol, dan ingatkan kirim bukti bayar. "
-                          "Detail tiap metode hanya dijawab bila customer bertanya eksplisit via teks, dari: " + bot.payment_info)
-        if not latest_order.payment_proof_path:
-            system_prompt += ("\n\nPENGINGAT BUKTI BAYAR: Customer belum mengirim bukti pembayaran. "
-                              "Di setiap balasan, akhiri dengan ajakan tegas mengirimkan foto/screenshot "
-                              "bukti pembayaran di chat ini sebelum pesanan diproses. "
-                              "Ikuti gaya bahasa pada system prompt.")
-    has_payment_info = bool((bot.payment_info or "").strip())
-    has_qris = bool(bot.qris_image_path)
-    pay_state = f"ada: {bot.payment_info.strip()}" if has_payment_info else "KOSONG (penjual belum mengisi info pembayaran)"
-    qris_state = "TERSEDIA (gambar QRIS penjual sudah diupload)" if has_qris else "TIDAK TERSEDIA (penjual belum upload gambar QRIS)"
-    cash_state = "TERSEDIA" if bot.cash_enabled else "TIDAK TERSEDIA"
-    system_prompt += (
-        "\n\nINFO PEMBAYARAN (ground truth, prioritas tertinggi untuk topik bayar): "
-        f"payment_info={pay_state}; qris_image={qris_state}; cash={cash_state}."
-        "\nATURAN PEMBAYARAN (wajib, kalahkan instruksi lain): "
-        "1. Jawab bayar/transfer/rekening/nomor rekening/QRIS HANYA dari info di atas. "
-        "2. DILARANG mengarang nomor rekening/bank/VA/QRIS. "
-        "3. Tautan toko/website di system prompt BUKAN metode pembayaran — JANGAN sebut/arahkan ke link toko saat ditanya pembayaran, "
-        "kecuali payment_info di atas eksplisit memuat link itu sebagai cara bayar. "
-        "4. Ditanya rekening: payment_info ada -> kutip persis; kosong -> katakan info pembayaran belum diisi penjual, minta tunggu, jangan arahkan ke website. "
-        "5. Ditanya QRIS: TERSEDIA -> katakan QRIS tersedia dan gambarnya menyusul tepat setelah pesan ini; "
-        "TIDAK TERSEDIA -> katakan QRIS belum tersedia, tawarkan payment_info bila ada, bila kosong katakan tunggu info penjual. "
-        "6. Setiap customer bertanya soal pembayaran/cara bayar (umum, bukan spesifik satu metode): "
-        "lihat INFO TOMBOL di bawah — bila AKTIF jawab SINGKAT + sebut tombol 1x "
-        "(contoh: 'Gampang, Kak! Silakan pilih metode pembayaran lewat tombol di bawah ya'); "
-        "bila NONAKTIF JANGAN sebut/janjikan tombol sama sekali, cukup sebut metode yang tersedia + ingatkan kirim bukti bayar. "
-        "JANGAN uraikan daftar/detail tiap metode dalam teks kecuali customer meminta eksplisit. "
-        "Bila semua metode kosong -> katakan info pembayaran belum diisi penjual, minta tunggu. "
-        "Jangan pernah katakan 'belum tersedia' untuk hal yang ground truth sebut TERSEDIA/ada. "
-        "7. Ditanya bayar tunai/cash/COD: TERSEDIA -> katakan bisa bayar tunai saat pesanan diterima; "
-        "TIDAK TERSEDIA -> jangan tawarkan tunai, arahkan ke metode yang ada. "
-    )
-    # ponytail: SATU penentu tombol (backend). AI tinggal ikut verdict -> janji tombol tak pernah meleset.
-    # pembayaran didorong hanya di luar alur pengisian order (nanti, setelah tercatat)
-    show_pay = bool(payment.available_methods(bot)
-                    and (payment.mentions_payment(text)
-                         or (not ordering_active and payment.payment_stage_active(bot, latest_order))))
-    pay_kb = payment.payment_keyboard(bot) if show_pay else None
-    system_prompt += ("\nINFO TOMBOL: " + ("AKTIF — tombol metode tampil di bawah pesanmu." if show_pay
-                                           else "NONAKTIF — tidak ada tombol; DILARANG menyebut/menjanjikan tombol."))
-
-    image_rows = (db.query(UploadedFile)
-                  .filter(UploadedFile.bot_id == bot.id, UploadedFile.file_type.in_(config.IMAGE_EXTS))
-                  .order_by(UploadedFile.created_at.asc()).all())
-    # ponytail: AI baca Drive otomatis — daftar nama file Drive masuk prompt, tanpa set manual
-    drive_names: list[str] = []
-    drive_videos: list[str] = []
-    try:
-        for ds in db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all():
-            try:
-                drive_names.extend(i["name"] for i in gsvc.list_drive_images(ds) if i.get("name"))
-            except Exception:
-                pass
-            try:
-                drive_videos.extend(v["name"] for v in gsvc.list_drive_videos(ds) if v.get("name"))
-            except Exception:
-                continue
-    except Exception:
-        pass
-    if image_rows or drive_names:
-        lines = "\n".join(f"- {(r.label or r.filename)} | {r.filename}" for r in image_rows)
-        if drive_names:
-            lines += ("\n" if lines else "") + "\n".join(f"- {n}" for n in drive_names[:100])
-        system_prompt += (
-            "\n\nDAFTAR GAMBAR TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + lines + "\n"
-            "ATURAN GAMBAR (wajib):\n"
-            "1. Jika customer meminta melihat gambar produk/menu/kolase, jawab singkat, lalu tambahkan baris `[IMG: label]` dengan label PERSIS seperti di daftar untuk tiap gambar yang cocok. Boleh juga pakai filename bila label kosong.\n"
-            "2. DILARANG mengarang label/filename yang tidak ada di daftar.\n"
-            "3. Tidak ada gambar yang cocok -> katakan belum tersedia, JANGAN tulis marker.\n"
-            "4. Customer minta 'semua gambar' -> tulis marker untuk semua gambar di daftar.\n"
-            "5. Gambar tidak ada di daftar -> JANGAN berjanji mengirim foto ('ini fotonya', 'saya kirim ulang'); cukup SATU pesan singkat bahwa gambarnya belum tersedia.\n"
-            "6. Customer menebak nama ('ini X bukan?', 'kalau ini?') -> cocokkan X dengan nama file foto/daftar; benarkan hanya bila cocok, koreksi bila tidak. Jangan asal setuju."
-        )
-    if drive_videos:
-        vlines = "\n".join(f"- {n}" for n in drive_videos[:50])
-        system_prompt += (
-            "\n\nDAFTAR VIDEO TERSEDIA (kirim ke customer hanya bila relevan dan diminta):\n" + vlines + "\n"
-            "ATURAN VIDEO (wajib):\n"
-            "1. Jika customer meminta video, jawab singkat, lalu tambahkan baris `[VID: nama]` dengan nama PERSIS seperti di daftar untuk tiap video yang cocok.\n"
-            "2. DILARANG mengarang nama yang tidak ada di daftar.\n"
-            "3. Tidak ada video yang cocok -> katakan belum tersedia, JANGAN tulis marker."
-        )
-
-    start = time.time()
-    # ---- PEMBATALAN PESANAN (backend yg eksekusi; AI hanya merangkai kata) ----
-    last_assistant = (db.query(Message)
-                      .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
-                              Message.response_text != "")
-                      .order_by(desc(Message.id)).first())
-    cancel_armed = bool(last_assistant and payment.CANCEL_MARK in (last_assistant.response_text or ""))
-    if cancel_armed and payment.classify_cancel_reply(text) == "confirm":
-        open_order = open_order_for_chat(db, bot_id, chat_id)
-        t0 = time.time()
-        if open_order:
-            open_order.status = "rejected"
-            open_order.rejection_reason = "Dibatalkan oleh customer"
-            try:
-                # ponytail: stok yg dulu dikurangi pesanan ini dikembalikan
-                sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
-                for _p in (open_order.products or []):
-                    for _s in sheets:
-                        try:
-                            if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), int(_p.get("quantity", 0) or 0)):
-                                break
-                        except Exception:
-                            continue
-                open_order.stock_deducted = False
-            except Exception:
-                pass
-            db.commit()
-            total = float(open_order.total_price) if open_order.total_price is not None else None
-            cancel_text = ("Baik, pesanan Kakak sudah dibatalkan ya."
-                           + (f" Total Rp{total:,.0f} tidak perlu dibayar.".replace(",", ".") if total else "")
-                           + " Kalau mau pesan lagi, tinggal bilang saja, Kak!")
-        else:
-            cancel_text = "Sepertinya sudah tidak ada pesanan aktif yang bisa dibatalkan ya, Kak. Mau pesan yang lain?"
-        try:
-            res_cancel = telegram_api.send_message(token, chat_id, cancel_text)
-        except Exception:
-            res_cancel = None
-        msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                      message_text=_strip_reply_ctx(text, reply_ctx),
-                      response_text=cancel_text, extracted_data=None,
-                      response_time=round(time.time() - t0, 2), model_used="cancel",
-                      telegram_message_id=inbound_tg_id,
-                      telegram_response_id=_tg_msg_id(res_cancel),
-                      reply_to_text=inbound_quote)
-        db.add(msg)
-        db.commit()
-        db.refresh(msg)
-        emit_conversation(db, bot_id, uid, msg)
-        return {"ok": True}
-    if payment.is_cancel_intent(text):
-        open_order = open_order_for_chat(db, bot_id, chat_id)
-        if open_order:
-            prods = ", ".join(f"{_p.get('product_name')} x{_p.get('quantity', 1) or 1}" for _p in (open_order.products or [])) or "-"
-            total = float(open_order.total_price) if open_order.total_price is not None else None
-            system_prompt += (f"\n\nKONTEKS PEMBATALAN: customer meminta membatalkan SELURUH pesanan aktif "
-                              f"({prods}" + (f"; total Rp{total:,.0f}".replace(",", ".") if total else "") + "). "
-                              f"JANGAN batalkan dulu. Ulangi ringkasannya + tanyakan konfirmasi, dan AKHIRI dengan kalimat persis: '{payment.CANCEL_ASK}' "
-                              "Jangan tulis apa pun setelah kalimat itu.")
-        else:
-            system_prompt += ("\n\nKONTEKS: customer menyebut pembatalan tapi tidak ada pesanan aktif. "
-                              "Katakan tidak ada pesanan aktif yang bisa dibatalkan.")
-        cancel_asked = True
-    if skip_ai:
-        # ponytail: turn slot tanpa pertanyaan user -> hemat 1 call AI, kirim pertanyaan slot saja
-        reply, model_used = "", "slot"
-    else:
-        try:
-            if pending_photo:
-                try:
-                    with open(config.resolve_upload_path(pending_photo.media_path), "rb") as f:
-                        img_bytes = f.read()
-                    reply, model_used = gemini_service.answer_with_image(
-                        api_key, system_prompt, file_context, history, img_bytes, text)
-                except Exception:
-                    reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
-            else:
-                reply, model_used = gemini_service.chat_with_fallback(api_key, system_prompt, file_context, history, text)
-            m_coords = re.search(r"\(koordinat:\s*([^)]+)\)", bot.system_prompt or "")
-            reply = location_service.enrich_with_maps(reply, m_coords.group(1).strip() if m_coords else None)
-        except Exception:
-            reply, model_used = "Sorry, there is a temporary issue. Please try again in a moment.", "none"
-    if slot and not cancel_asked:
-        # ponytail: 1 bubble = jawaban AI (bila ada) + 1 pertanyaan slot; tanpa slot: reply AI utuh
-        reply = f"{reply}\n\n{slot_q}".strip() if reply else slot_q
-    response_time = round(time.time() - start, 2)
-
-    clean_reply, wanted, wanted_videos = image_markers.parse_media_markers(reply)
-    # ponytail: show_pay/pay_kb sudah dihitung sebelum AI (lihat INFO TOMBOL) -> pakai yg sama
-    paths = []
-    tmp_files = []
-    sent_labels = []
-    for name in wanted:
-        # ponytail: toleransi format lama "label | filename" -> coba bagian filename juga
-        candidates = [name] + ([name.rsplit("|", 1)[-1].strip()] if "|" in name else [])
-        row = None
-        for cand in candidates:
-            row = (db.query(UploadedFile)
-                   .filter(UploadedFile.bot_id == bot.id,
-                           ((UploadedFile.label == cand) | (UploadedFile.filename == cand)),
-                           UploadedFile.file_type.in_(config.IMAGE_EXTS)).first())
-            if row:
-                break
-        if row:
-            p = config.resolve_upload_path(row.file_path)
-            if p and os.path.exists(p):
-                paths.append(p)
-                sent_labels.append(row.label or row.filename)
-    if wanted:
-        have = set(os.path.basename(p) for p in paths)
-        missing = [w for w in wanted if w not in have]
-        if missing:
-            try:
-                dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
-                for ds in dsources:
-                    try:
-                        items = gsvc.list_drive_images(ds)
-                        names = [i["name"] for i in items]
-                        for w in list(missing):
-                            hit = gsvc.fuzzy_find(w, names)
-                            if not hit:
-                                continue
-                            fid = next(i["id"] for i in items if i["name"] == hit)
-                            data = gsvc.download_drive_image(fid)
-                            tmp = f"/tmp/curabot-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
-                            with open(tmp, "wb") as _f:
-                                _f.write(data)
-                            # ponytail: JANGAN kirim di sini; kumpulkan lalu kirim sekali di bawah
-                            paths.append(tmp)
-                            tmp_files.append(tmp)
-                            sent_labels.append(hit)
-                            missing.remove(w)
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-    # ponytail: kirim sekali; gagal/tidak-tersedia -> SATU pesan gabungan (anti dobel)
-    image_note_sent = False
-    note_tg_id = None
-    if paths:
-        delivered = 0
-        for i in range(0, len(paths), 10):
-            chunk = paths[i:i + 10]
-            chunk_labels = sent_labels[i:i + 10]
-            try:
-                if len(chunk) == 1:
-                    res = telegram_api.send_photo(token, chat_id, chunk[0])
-                    _remember_photo_msg((res or {}).get("message_id"), chunk_labels[0] if chunk_labels else "")
-                else:
-                    try:
-                        results = telegram_api.send_media_group(token, chat_id, chunk)
-                        for r, lb in zip(results or [], chunk_labels):
-                            _remember_photo_msg((r or {}).get("message_id"), lb)
-                    except Exception:
-                        for p, lb in zip(chunk, chunk_labels):
-                            res1 = telegram_api.send_photo(token, chat_id, p)
-                            _remember_photo_msg((res1 or {}).get("message_id"), lb)
-                delivered += len(chunk)
-            except Exception:
-                for p, lb in zip(chunk, chunk_labels):
-                    try:
-                        res1 = telegram_api.send_photo(token, chat_id, p)
-                        _remember_photo_msg((res1 or {}).get("message_id"), lb)
-                        delivered += 1
-                    except Exception:
-                        continue
-        for t in tmp_files:
-            try:
-                os.remove(t)
-            except OSError:
-                pass
-        if delivered:
-            _remember_sent_images(chat_id, sent_labels or wanted)
-        else:
-            note = "Maaf, gambar gagal dikirim. Coba lagi ya."
-            try:
-                res_note = telegram_api.send_message(token, chat_id,
-                                                     f"{clean_reply}\n\n{note}" if clean_reply else note,
-                                                     reply_markup=pay_kb)
-                note_tg_id = _tg_msg_id(res_note)
-                image_note_sent = True
-            except Exception:
-                pass
-    elif wanted:
-        note = "Maaf, gambar untuk itu belum tersedia ya."
-        try:
-            res_note2 = telegram_api.send_message(token, chat_id,
-                                                  f"{clean_reply}\n\n{note}" if clean_reply else note,
-                                                  reply_markup=pay_kb)
-            note_tg_id = _tg_msg_id(res_note2)
-            image_note_sent = True
-        except Exception:
-            pass
-
-    # ponytail: video Drive kirim-file saja (tanpa analisis AI); maks 3/turn anti sedot kuota
-    video_note = ""
-    video_paths: list[str] = []
-    if wanted_videos:
-        video_labels: list[str] = []
-        video_tmp: list[str] = []
-        try:
-            dsources = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot.id, BotExternalSource.kind == "drive_folder").all()
-        except Exception:
-            dsources = []
-        for w in wanted_videos[:3]:
-            hit = fid = None
-            for ds in dsources:
-                try:
-                    items = gsvc.list_drive_videos(ds)
-                except Exception:
-                    continue
-                hit = gsvc.fuzzy_find(w, [i["name"] for i in items])
-                if hit:
-                    fid = next((i["id"] for i in items if i["name"] == hit), None)
-                    break
-            if not hit or not fid:
-                continue
-            try:
-                data = gsvc.download_drive_file(fid, gsvc.MAX_DRIVE_VIDEO_BYTES)
-                # ponytail: basename Drive milik owner; prefix waktu anti tabrakan /tmp
-                tmp = f"/tmp/curabot-vid-{bot.id}-{int(time.time() * 1000)}-{os.path.basename(hit)}"
-                with open(tmp, "wb") as _f:
-                    _f.write(data)
-                video_paths.append(tmp)
-                video_labels.append(hit)
-                video_tmp.append(tmp)
-            except Exception:
-                continue
-        delivered_v = 0
-        for p, lb in zip(video_paths, video_labels):
-            try:
-                telegram_api.send_document(token, chat_id, p, lb)
-                delivered_v += 1
-            except Exception:
-                continue
-        for t in video_tmp:
-            try:
-                os.remove(t)
-            except OSError:
-                pass
-        if not delivered_v:
-            video_note = "Maaf, video untuk itu belum tersedia ya."
-            if image_note_sent:
-                # ponytail: teks utama sudah terkirim via note gambar -> note video terpisah
-                try:
-                    telegram_api.send_message(token, chat_id, video_note, reply_markup=pay_kb)
-                except Exception:
-                    pass
-                video_note = ""
-
-    # customer minta qris & ada gambar QRIS -> kirim gambarnya
-    if bot.qris_image_path and "qris" in text.lower():
-        try:
-            telegram_api.send_photo(token, chat_id, config.resolve_upload_path(bot.qris_image_path), caption="QRIS pembayaran")
-            try:
-                telegram_api.send_message(token, chat_id, "Itu gambar QRIS resmi dari penjual di atas ya. Setelah membayar, kirimkan foto/screenshot bukti pembayaran di chat ini.")
-            except Exception:
-                pass
-        except Exception:
-            telegram_api.send_message(token, chat_id, "Maaf, gambar QRIS gagal dikirim. Coba minta lagi atau hubungi penjual ya.")
-
-    # ponytail: existing/order sudah dihitung pre-AI (mesin slot); di sini hanya kunci mutasi turn batal
-    if cancel_asked:
-        # ponytail: turn niat-batal -> AI hanya diminta tanya konfirmasi; mutasi order dilarang
-        order = None
-
-    msg = Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                  message_text=_strip_reply_ctx(text, reply_ctx),
-                  response_text=reply, extracted_data=order, response_time=response_time,
-                  model_used=model_used, telegram_message_id=inbound_tg_id,
-                  telegram_response_id=note_tg_id, reply_to_text=inbound_quote)
-    db.add(msg)
-    db.commit()
-    db.refresh(msg)
-
-    # ponytail: hanya simpan/update order setelah customer mengonfirmasi ringkasan dari AI
-    saved_order = None
-    record_note = ""
-    _kb_svc = (file_context or "") + "\n" + (bot.system_prompt or "")
-    _addr_default = "Onsite" if payment.service_options(_kb_svc) == (True, False) else None
-    if order and existing and order_is_confirmed(order):
-        # 1 chat 1 open order — selalu merge ke order yang sama, field null tidak menimpa isi lama
-        new_products = order.get("products") or existing.products
-        # ponytail: note per produk — bila AI menghilangkan note lama untuk produk yg sama, pulihkan
-        try:
-            old_notes = {str(p.get("product_name", "")).lower(): p.get("note") for p in (existing.products or [])}
-            for p in new_products:
-                if not p.get("note"):
-                    old = old_notes.get(str(p.get("product_name", "")).lower())
-                    if old:
-                        p["note"] = old
-        except Exception:
-            pass
-        existing.products = new_products
-        existing.total_price = order.get("total_price") if order.get("total_price") is not None else existing.total_price
-        existing.delivery_address = order.get("delivery_address") or existing.delivery_address or _addr_default
-        existing.customer_phone = order.get("customer_phone") or existing.customer_phone
-        if not existing.customer_name and order.get("customer_name"):
-            existing.customer_name = order.get("customer_name")
-        # ponytail: status TIDAK diubah dari sisi chat — hanya creator yang boleh mengubah status order
-        db.commit()
-        saved_order = existing
-        record_note = "✅ Pesanan sudah diperbarui di sistem."
-    elif order and order_is_confirmed(order):
-        status = "pending" if order.get("total_price") is not None else "incomplete"
-        new_order = ExtractedOrder(
-            bot_id=bot_id, message_id=msg.id, customer_user_id=uid,
-            customer_name=order.get("customer_name") or customer_name,
-            products=order["products"], total_price=order.get("total_price"),
-            delivery_address=order.get("delivery_address") or _addr_default, customer_phone=order.get("customer_phone"),
-        )
-        db.add(new_order)
-        db.commit()
-        db.refresh(new_order)
-        saved_order = new_order
-        record_note = f"✅ Pesanan sudah tercatat di sistem (No. #{new_order.id})."
-        try:
-            excel_service.append_order(bot_id, order, uid, status)
-        except Exception:
-            pass
-        try:
-            sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
-            for _p in (saved_order.products or []):
-                for _s in sheets:
-                    try:
-                        if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), -int(_p.get("quantity", 0) or 0)):
-                            break
-                    except Exception:
-                        continue
-            saved_order.stock_deducted = True
-            db.commit()
-        except Exception:
-            pass
-
-    if not image_note_sent:
-        send_text = (clean_reply if clean_reply else ("Berikut videonya ya." if video_paths else "Berikut gambarnya ya."))
-        if video_note:
-            send_text = f"{send_text}\n\n{video_note}" if send_text else video_note
-        if record_note:
-            # ponytail: klaim "tercatat" HANYA dari backend yg tahu DB — bukan dari tebakan AI
-            send_text = f"{send_text}\n\n{record_note}"
-        elif not saved_order and not existing and re.search(
-                r"tercatat|masuk sistem|diteruskan ke (tim|dapur)|telah dicatat", send_text, re.IGNORECASE):
-            # ponytail: AI klaim tercatat padahal tak ada yg tersimpan -> ralat di pesan yg sama
-            send_text += ("\n\n⚠️ Ralat: pesanan di atas belum masuk sistem — "
-                          "mohon jawab konfirmasi ('Benar') agar kami catat.")
-        try:
-            res_main = telegram_api.send_message(token, chat_id, send_text, reply_markup=pay_kb)
-            rid = _tg_msg_id(res_main)
-            if rid:
-                msg.telegram_response_id = rid
-                db.commit()
-        except Exception:
-            pass
-
-    # data baru saja lengkap -> ingatkan bayar deterministik (balasan AI turn ini belum tahu)
-    if saved_order and not data_complete and payment.payment_stage_active(bot, saved_order):
-        try:
-            text_r = payment.reminder_text(bot, saved_order)
-            res_r = telegram_api.send_message(token, chat_id, text_r,
-                                              reply_markup=payment.payment_keyboard(bot))
-            db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                           message_text="[pengingat pembayaran otomatis]", response_text=text_r,
-                           telegram_message_id=inbound_tg_id,
-                           telegram_response_id=_tg_msg_id(res_r)))
-            db.commit()
-        except Exception:
-            pass
-    elif not saved_order and existing and not data_complete and order and not slot:
-        # order belum terkonfirmasi, tapi ekstraksi turn ini menunjukkan data sudah lengkap.
-        # ponytail: saat slot pengisian aktif, pembayaran nanti setelah tercatat -> jangan ingatkan dulu
-        merged = SimpleNamespace(
-            customer_name=order.get("customer_name") or existing.customer_name,
-            customer_phone=order.get("customer_phone") or existing.customer_phone,
-            products=order.get("products") or existing.products,
-            total_price=order.get("total_price") if order.get("total_price") is not None else existing.total_price,
-            delivery_address=order.get("delivery_address") or existing.delivery_address,
-            status=existing.status, payment_proof_path=existing.payment_proof_path)
-        if payment.payment_stage_active(bot, merged):
-            reminded = (db.query(Message)
-                        .filter(Message.bot_id == bot_id, Message.chat_id == str(chat_id),
-                                Message.response_text.like(payment.REMINDER_PREFIX + "%"))
-                        .first())
-            if not reminded:
-                try:
-                    text_r = payment.reminder_text(bot, merged)
-                    res_r2 = telegram_api.send_message(token, chat_id, text_r,
-                                                       reply_markup=payment.payment_keyboard(bot))
-                    db.add(Message(bot_id=bot_id, user_id=uid, chat_id=str(chat_id),
-                                   message_text="[pengingat pembayaran otomatis]", response_text=text_r,
-                                   telegram_message_id=inbound_tg_id,
-                                   telegram_response_id=_tg_msg_id(res_r2)))
-                    db.commit()
-                except Exception:
-                    pass
-
-    emit_conversation(db, bot_id, uid, msg)
-    return {"ok": True}
+    return _handle_customer_text(db, bot, binding, chat_id, uid, customer_name,
+                                 text, reply_ctx, inbound_quote, inbound_tg_id)
 
 
 @app.on_event("startup")

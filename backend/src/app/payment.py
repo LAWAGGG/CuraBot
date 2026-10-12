@@ -108,6 +108,54 @@ def callback_response(bot, data: str) -> tuple:
     return "text", NO_INFO_TEXT
 
 
+# --- tombol konfirmasi inline (deterministik backend; AI hanya tulis teks) ---
+# ponytail: 1 modul penentu semua tombol. AI tak boleh mengarang callback_data.
+def order_confirm_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [{"text": "✅ Benar, catat pesanan", "callback_data": "cfm:order_yes"}],
+        [{"text": "✏️ Ada yang diubah", "callback_data": "cfm:order_no"}],
+    ]}
+
+
+def cancel_confirm_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [{"text": "Ya, batalkan", "callback_data": "cfm:cancel_yes"}],
+        [{"text": "Jangan batalkan", "callback_data": "cfm:cancel_no"}],
+    ]}
+
+
+def service_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [{"text": "🍽️ Makan di tempat", "callback_data": "cfm:svc_dinein"}],
+        [{"text": "🛍️ Ambil di toko", "callback_data": "cfm:svc_pickup"}],
+        [{"text": "🛵 Dikirim online", "callback_data": "cfm:svc_delivery"}],
+    ]}
+
+
+def merge_keyboards(*kbs) -> dict | None:
+    rows = []
+    for kb in kbs:
+        if kb:
+            rows.extend(kb.get("inline_keyboard") or [])
+    return {"inline_keyboard": rows} if rows else None
+
+
+# callback tombol konfirmasi -> teks sintetis user (diproses jalur normal yg sama)
+CALLBACK_TEXT = {
+    "cfm:order_yes": "Benar",
+    "cfm:order_no": "Ada yang mau saya ubah",
+    "cfm:cancel_yes": "Ya, batalkan pesanan saya",
+    "cfm:cancel_no": "Jangan jadi dibatalkan",
+    "cfm:svc_dinein": "Mau makan di tempat",
+    "cfm:svc_pickup": "Mau ambil di toko",
+    "cfm:svc_delivery": "Mau dikirim online",
+}
+
+
+def is_confirm_callback(data: str) -> bool:
+    return (data or "").startswith("cfm:")
+
+
 # --- pembatalan pesanan oleh customer (2 langkah: niat -> konfirmasi -> eksekusi) ---
 # kalimat kunci konfirmasi; AI wajib menuliskannya persis agar backend mengenalinya
 CANCEL_MARK = "mau dibatalkan"

@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 curabot-5*
+tests/
 uploads/
 *.egg-info/
 .pytest_cache/
