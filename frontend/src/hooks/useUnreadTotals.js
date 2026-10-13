@@ -10,7 +10,7 @@ export function formatUnread(count) {
   return String(n)
 }
 
-function openBotSocket(botId, onEvent) {
+export function openBotSocket(botId, onEvent) {
   const wsBase = API_BASE.replace(/^http/, 'ws')
   let ws
   let active = true

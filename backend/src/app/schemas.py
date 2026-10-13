@@ -41,6 +41,34 @@ class OrderStatusIn(BaseModel):
     reason: Optional[str] = None
 
 
+class OrderProductIn(BaseModel):
+    product_name: str = Field(min_length=1, max_length=255)
+    quantity: int = Field(default=1, ge=1, le=1000)
+    price: float = Field(default=0, ge=0)
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class OrderCreateIn(BaseModel):
+    customer_name: str = Field(min_length=1, max_length=255)
+    customer_phone: Optional[str] = Field(default=None, max_length=50)
+    delivery_address: Optional[str] = None
+    customer_user_id: Optional[str] = Field(default=None, max_length=50)
+    products: List[OrderProductIn] = Field(min_length=1, max_length=100)
+    total_price: Optional[float] = Field(default=None, ge=0)
+    status: str = Field(default="pending", pattern="^(pending|incomplete|confirmed|shipped|completed|rejected)$")
+
+
+class OrderUpdateIn(BaseModel):
+    customer_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    customer_phone: Optional[str] = Field(default=None, max_length=50)
+    delivery_address: Optional[str] = None
+    customer_user_id: Optional[str] = Field(default=None, max_length=50)
+    products: Optional[List[OrderProductIn]] = Field(default=None, max_length=100)
+    total_price: Optional[float] = Field(default=None, ge=0)
+    status: Optional[str] = Field(default=None, pattern="^(pending|incomplete|confirmed|shipped|completed|rejected)$")
+    reason: Optional[str] = None
+
+
 class ReplyIn(BaseModel):
     text: str = Field(min_length=1, max_length=4000)
     reply_to_bubble_id: Optional[str] = Field(default=None, max_length=50)

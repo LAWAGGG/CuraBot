@@ -7,6 +7,7 @@ import queue
 import re
 import threading
 import time
+import unicodedata
 import uuid
 from types import SimpleNamespace
 from datetime import datetime, timedelta
@@ -1239,8 +1240,70 @@ def get_orders(bot_id: int, page: int = Query(1, ge=1), limit: int = Query(20, l
     return {"page": page, "limit": limit, "total": total, "orders": [order_to_dict(r) for r in rows]}
 
 
+def _order_products_to_dicts(products) -> list[dict]:
+    out = []
+    for p in (products or []):
+        d = p.model_dump() if hasattr(p, "model_dump") else dict(p)
+        d["product_name"] = (d.get("product_name") or "").strip()
+        if not d["product_name"]:
+            raise HTTPException(422, "Product name empty")
+        d["quantity"] = int(d.get("quantity") or 1)
+        d["price"] = float(d.get("price") or 0)
+        if d.get("note") is not None:
+            d["note"] = str(d["note"]).strip() or None
+        out.append(d)
+    if not out:
+        raise HTTPException(422, "Products empty")
+    return out
+
+
+def _order_total(products: list[dict], total_price=None):
+    if total_price is not None:
+        return float(total_price)
+    try:
+        return float(sum(float(p.get("price") or 0) * int(p.get("quantity") or 1) for p in products))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _restore_order_stock(db: Session, bot_id: int, order: ExtractedOrder):
+    try:
+        sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
+        for _p in (order.products or []):
+            for _s in sheets:
+                try:
+                    if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), int(_p.get("quantity", 0) or 0)):
+                        break
+                except Exception:
+                    continue
+        order.stock_deducted = False
+    except Exception:
+        pass
+
+
+@app.post("/api/bots/{bot_id}/orders", status_code=201)
+def create_order(bot_id: int, body: schemas.OrderCreateIn,
+                 user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    products = _order_products_to_dicts(body.products)
+    # ponytail: manual order tanpa chat -> id semu, tombol chat disembunyikan di frontend
+    cuid = (body.customer_user_id or "").strip() or f"manual-{int(time.time() * 1000)}"
+    order = ExtractedOrder(
+        bot_id=bot_id, message_id=None, customer_user_id=cuid[:50],
+        customer_name=body.customer_name.strip(),
+        products=products, total_price=_order_total(products, body.total_price),
+        delivery_address=(body.delivery_address or "").strip() or None,
+        customer_phone=(body.customer_phone or "").strip() or None,
+        status=body.status,
+    )
+    db.add(order)
+    db.commit()
+    db.refresh(order)
+    return {"ok": True, "id": order.id, "order": order_to_dict(order)}
+
+
 @app.put("/api/bots/{bot_id}/orders/{order_id}")
-def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
+def update_order(bot_id: int, order_id: int, body: schemas.OrderUpdateIn,
                  user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
     get_bot_or_404(db, user_id, bot_id)
     order = db.query(ExtractedOrder).filter(ExtractedOrder.id == order_id,
@@ -1248,22 +1311,30 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
     if not order:
         raise HTTPException(404, "Order not found")
     prev = order.status
-    order.status = body.status
-    order.rejection_reason = body.reason if body.status == "rejected" else None
-    if body.status == "rejected" and prev != "rejected" and order.stock_deducted:
-        try:
-            sheets = db.query(BotExternalSource).filter(BotExternalSource.bot_id == bot_id, BotExternalSource.kind == "sheet").all()
-            for _p in (order.products or []):
-                for _s in sheets:
-                    try:
-                        if gsvc.adjust_stock(_s, str(_p.get("product_name", "")), int(_p.get("quantity", 0) or 0)):
-                            break
-                    except Exception:
-                        continue
-            order.stock_deducted = False
-        except Exception:
-            pass
+    if body.customer_name is not None:
+        order.customer_name = body.customer_name.strip()
+    if body.customer_phone is not None:
+        order.customer_phone = (body.customer_phone or "").strip() or None
+    if body.delivery_address is not None:
+        order.delivery_address = (body.delivery_address or "").strip() or None
+    if body.customer_user_id is not None and (body.customer_user_id or "").strip():
+        order.customer_user_id = body.customer_user_id.strip()[:50]
+    if body.products is not None:
+        order.products = _order_products_to_dicts(body.products)
+    if body.products is not None and body.total_price is None:
+        order.total_price = _order_total(order.products, None)
+    elif body.total_price is not None:
+        order.total_price = float(body.total_price)
+    status_changed = body.status is not None and body.status != prev
+    if body.status is not None:
+        order.status = body.status
+    order.rejection_reason = body.reason if order.status == "rejected" else None
+    if order.status == "rejected" and prev != "rejected" and order.stock_deducted:
+        _restore_order_stock(db, bot_id, order)
     db.commit()
+    if not status_changed:
+        db.refresh(order)
+        return {"ok": True, "order": order_to_dict(order)}
 
     # webhook ke customer: kabari perubahan status order
     msg_row = db.query(Message).filter(Message.id == order.message_id).first() if order.message_id else None
@@ -1301,6 +1372,22 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
             telegram_api.send_message(config.TELEGRAM_TOKEN, msg_row.chat_id, note)
         except Exception:
             pass
+    db.refresh(order)
+    return {"ok": True, "order": order_to_dict(order)}
+
+
+@app.delete("/api/bots/{bot_id}/orders/{order_id}")
+def delete_order(bot_id: int, order_id: int, user_id: int = Depends(security.get_current_user),
+                 db: Session = Depends(get_db)):
+    get_bot_or_404(db, user_id, bot_id)
+    order = db.query(ExtractedOrder).filter(ExtractedOrder.id == order_id,
+                                            ExtractedOrder.bot_id == bot_id).first()
+    if not order:
+        raise HTTPException(404, "Order not found")
+    if order.stock_deducted:
+        _restore_order_stock(db, bot_id, order)
+    db.delete(order)
+    db.commit()
     return {"ok": True}
 
 
@@ -1343,11 +1430,15 @@ def remind_payment(bot_id: int, order_id: int, user_id: int = Depends(security.g
 @app.get("/api/bots/{bot_id}/orders/export")
 def export_orders(bot_id: int, user_id: int = Depends(security.get_current_user),
                   db: Session = Depends(get_db)):
-    get_bot_or_404(db, user_id, bot_id)
+    bot = get_bot_or_404(db, user_id, bot_id)
     path = os.path.join(config.UPLOAD_DIR, str(bot_id), "orders.xlsx")
     if not os.path.exists(path):
         raise HTTPException(404, "No orders exported yet")
-    return FileResponse(path, filename="orders.xlsx",
+    # ponytail: nama berkas rapi {toko}-orders-{tanggal} biar jelas saat diunduh
+    ascii_name = unicodedata.normalize("NFKD", bot.name or "").encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_name.lower()).strip("-") or "toko"
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    return FileResponse(path, filename=f"{slug}-orders-{stamp}.xlsx",
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 

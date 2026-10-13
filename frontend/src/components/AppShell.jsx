@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Bot, LayoutGrid, LogOut, Menu, Moon, PlusCircle, Settings, Sun } from 'lucide-react'
 import CuraBotLogo from '@/components/CuraBotLogo'
+import GlobalChatNotifier from '@/components/GlobalChatNotifier'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
 import { useUnreadTotal } from '@/hooks/useUnreadTotals'
@@ -293,6 +294,7 @@ export default function AppShell() {
 
   return (
     <ChatNavContext.Provider value={{ selectedChat, setSelectedChat }}>
+    <GlobalChatNotifier />
     <div className="min-h-svh bg-muted lg:flex">
       <aside className="sticky top-0 hidden h-svh w-[280px] shrink-0 flex-col border-sidebar-border dark:border-r dark:bg-sidebar lg:flex">
         <Brand />
