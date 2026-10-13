@@ -27,6 +27,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch, errorMessage, invalidate } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { formatUnread, useUnreadTotals } from '@/hooks/useUnreadTotals'
 import { formatDate } from '@/lib/utils'
 
 const BOTS_KEY = 'bots'
@@ -42,6 +43,7 @@ export default function Dashboard() {
     apiFetch(BOTS_KEY, { url: '/api/bots/list' }),
   )
   const bots = data?.bots ?? []
+  const totals = useUnreadTotals(bots)
 
   const lpTimer = useRef(null)
   const lpFired = useRef(false)
@@ -190,8 +192,16 @@ export default function Dashboard() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {bots.map((bot, index) => (
+            <div key={bot.id} className="relative">
+              {(totals[bot.id] ?? bot.unread_total ?? 0) > 0 ? (
+                <span
+                  aria-label={`${totals[bot.id] ?? bot.unread_total} chat baru`}
+                  className="absolute -top-2 -right-1.5 z-20 flex h-6 min-w-6 items-center justify-center rounded-full bg-success px-1.5 text-xs font-bold text-white shadow-md ring-2 ring-background"
+                >
+                  {formatUnread(totals[bot.id] ?? bot.unread_total)}
+                </span>
+              ) : null}
             <Card
-              key={bot.id}
               style={{ animationDelay: `${index * 60}ms` }}
               onClick={selecting
                 ? () => { if (lpFired.current) { lpFired.current = false; return } toggleSelected(bot.id) }
@@ -266,6 +276,7 @@ export default function Dashboard() {
               </div>
 
             </Card>
+            </div>
           ))}
         </div>
       )}

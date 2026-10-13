@@ -5,6 +5,7 @@ import { Bot, LayoutGrid, LogOut, Menu, Moon, PlusCircle, Settings, Sun } from '
 import CuraBotLogo from '@/components/CuraBotLogo'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { useUnreadTotal } from '@/hooks/useUnreadTotals'
 
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -33,7 +34,7 @@ function Brand() {
   )
 }
 
-function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
+function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent, badge }) {
   return (
     <NavLink
       to={to}
@@ -68,7 +69,15 @@ function SideLink({ to, end, pillId, onNavigate, icon: Icon, label, indent }) {
               aria-hidden="true"
             />
           ) : null}
-          <span className="relative">{label}</span>
+          <span className="relative flex-1">{label}</span>
+          {badge > 0 ? (
+            <span
+              aria-label={`${badge} chat baru`}
+              className="relative flex h-5 min-w-5 items-center justify-center rounded-full bg-success px-1 text-[11px] font-bold text-white"
+            >
+              {badge >= 1000 ? `${parseFloat((badge / 1000).toFixed(2))}K` : badge}
+            </span>
+          ) : null}
         </>
       )}
     </NavLink>
@@ -142,6 +151,7 @@ function SidebarNav({ onNavigate, pillId = 'side' }) {
   const botMatch = pathname.match(/^\/bots\/([^/]+)/)
   const botId = botMatch && botMatch[1] !== 'new' ? botMatch[1] : null
   const { selectedChat } = useContext(ChatNavContext)
+  const unreadTotal = useUnreadTotal(botId, 0)
 
   // ponytail: saat chat detail terbuka, sidebar jadi daftar user biar gampang pindah chat
   if (botId && selectedChat) {
@@ -176,6 +186,7 @@ function SidebarNav({ onNavigate, pillId = 'side' }) {
                   onNavigate={onNavigate}
                   label={label}
                   indent
+                  badge={suffix === 'percakapan' ? unreadTotal : 0}
                 />
               </div>
             ))}

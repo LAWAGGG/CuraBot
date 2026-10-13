@@ -101,7 +101,7 @@ def set_chat_mode(db: Session, bot_id: int, chat_id: str, mode: str) -> BotChat 
     return row
 
 
-def public_bot(bot: Bot) -> dict:
+def public_bot(bot: Bot, unread_total: int = 0) -> dict:
     return {
         "id": bot.id,
         "name": bot.name,
@@ -113,7 +113,34 @@ def public_bot(bot: Bot) -> dict:
         "qris_image_url": config.upload_url(bot.id, bot.qris_image_path),
         "status": bot.status,
         "created_at": str(bot.created_at),
+        "unread_total": unread_total,
     }
+
+
+def unread_totals_map(db: Session, bot_ids: list[int]) -> dict[int, int]:
+    if not bot_ids:
+        return {}
+    incoming = or_(Message.sender.is_(None), Message.sender != "admin")
+    rows = (
+        db.query(Message.bot_id, func.count(Message.id))
+        .outerjoin(
+            ConversationRead,
+            (ConversationRead.bot_id == Message.bot_id)
+            & (ConversationRead.user_id == Message.user_id),
+        )
+        .filter(
+            Message.bot_id.in_(bot_ids),
+            incoming,
+            Message.message_text != "[admin]",
+            or_(
+                ConversationRead.last_read_at.is_(None),
+                Message.created_at > ConversationRead.last_read_at,
+            ),
+        )
+        .group_by(Message.bot_id)
+        .all()
+    )
+    return {bot_id: count for bot_id, count in rows}
 
 
 def order_to_dict(o: ExtractedOrder) -> dict:
@@ -205,13 +232,16 @@ def create_bot(body: schemas.BotCreateIn, user_id: int = Depends(security.get_cu
 def list_bots(user_id: int = Depends(security.get_current_user), db: Session = Depends(get_db)):
     bots = (db.query(Bot).filter(Bot.user_id == user_id, Bot.status == "active")
             .order_by(desc(Bot.created_at)).all())
-    return {"bots": [public_bot(b) for b in bots]}
+    totals = unread_totals_map(db, [b.id for b in bots])
+    return {"bots": [public_bot(b, totals.get(b.id, 0)) for b in bots]}
 
 
 @app.get("/api/bots/{bot_id}")
 def get_bot_endpoint(bot_id: int, user_id: int = Depends(security.get_current_user),
                      db: Session = Depends(get_db)):
-    return public_bot(get_bot_or_404(db, user_id, bot_id))
+    bot = get_bot_or_404(db, user_id, bot_id)
+    totals = unread_totals_map(db, [bot.id])
+    return public_bot(bot, totals.get(bot.id, 0))
 
 
 @app.put("/api/bots/{bot_id}")
@@ -1011,8 +1041,10 @@ def list_conversations(bot_id: int, q: str = Query("", max_length=100),
                  or needle in str(i["user_id"]).lower()
                  or needle in (i["last_text"] or "").lower()]
     total = len(items)
+    unread_total = sum(i["unread_count"] for i in items)
     start = (page - 1) * limit
     return {"total": total, "page": page, "limit": limit,
+            "unread_total": unread_total,
             "conversations": items[start:start + limit]}
 
 
@@ -1249,6 +1281,8 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
             note += f"\nAlasan: {body.reason or '-'}\nSilakan hubungi kami jika ingin memesan ulang."
         elif body.status == "pending":
             note += " Mohon tunggu, kami akan mengabari Anda lagi setelah ada update."
+        elif body.status == "completed":
+            note += "\nTerima kasih telah memesan! Ditunggu pesanan berikutnya ya."
         elif body.status == "incomplete":
             missing = []
             if not order.customer_phone:
@@ -1257,8 +1291,12 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderStatusIn,
                 missing.append("alamat pengiriman")
             if not (order.products or []):
                 missing.append("daftar produk")
-            detail = ", ".join(missing) if missing else "data pesanan"
-            note += f"\nMohon lengkapi data berikut agar pesanan bisa diproses: {detail}."
+            if missing:
+                detail = ", ".join(missing)
+                note += f"\nMohon lengkapi data berikut agar pesanan bisa diproses: {detail}."
+            else:
+                note += ("\nData pesanan Anda sudah terisi seluruhnya, "
+                         "mohon ditunggu untuk konfirmasi status berikutnya ya.")
         try:
             telegram_api.send_message(config.TELEGRAM_TOKEN, msg_row.chat_id, note)
         except Exception:

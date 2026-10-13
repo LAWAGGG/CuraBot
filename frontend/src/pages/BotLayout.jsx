@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { apiFetch } from '@/lib/api'
 import { useApi } from '@/hooks/useApi'
+import { formatUnread, useUnreadTotal } from '@/hooks/useUnreadTotals'
 import { formatDate } from '@/lib/utils'
 import { ChatNavContext } from '@/components/AppShell'
 
@@ -30,6 +31,7 @@ export default function BotLayout() {
   )
 
   const [shareOpen, setShareOpen] = useState(false)
+  const unread = useUnreadTotal(id, bot?.unread_total ?? 0)
   const { selectedChat, setSelectedChat } = useContext(ChatNavContext)
   const location = useLocation()
   const mascotRef = useRef(null)
@@ -187,11 +189,19 @@ export default function BotLayout() {
             end={tab.end}
             className={({ isActive }) =>
               isActive
-                ? 'border-b-2 border-primary px-3.5 py-2.5 text-sm font-semibold whitespace-nowrap text-primary'
-                : 'border-b-2 border-transparent px-3.5 py-2.5 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground'
+                ? 'flex items-center gap-1.5 border-b-2 border-primary px-3.5 py-2.5 text-sm font-semibold whitespace-nowrap text-primary'
+                : 'flex items-center gap-1.5 border-b-2 border-transparent px-3.5 py-2.5 text-sm whitespace-nowrap text-muted-foreground transition-colors hover:text-foreground'
             }
           >
             {tab.label}
+            {tab.to === 'percakapan' && unread > 0 ? (
+              <span
+                aria-label={`${unread} chat baru`}
+                className="flex h-5 min-w-5 items-center justify-center rounded-full bg-success px-1 text-[11px] font-bold text-white"
+              >
+                {formatUnread(unread)}
+              </span>
+            ) : null}
           </NavLink>
         ))}
       </nav>
