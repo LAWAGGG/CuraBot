@@ -92,8 +92,8 @@ export default function GoogleSources({ bot, mode = 'full', onCountChange }) {
         <p className="mt-0.5 text-sm text-muted-foreground">Tempel link, share kesini sebagai data</p>
         <div className="mt-3 flex flex-col gap-2 md:flex-row">
           <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-border bg-background px-2 py-1.5 text-sm">
-            <option value="sheet">Spreadsheet produk</option>
-            <option value="drive_folder">Folder Drive (gambar + dokumen + video)</option>
+            <option value="sheet">Spreadsheet</option>
+            <option value="drive_folder">Drive</option>
           </select>
           <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://docs.google.com/... atau https://drive.google.com/..." className="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm" />
           <Button onClick={connect} disabled={busy}>Hubungkan</Button>
