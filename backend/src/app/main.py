@@ -1363,8 +1363,8 @@ def update_order(bot_id: int, order_id: int, body: schemas.OrderUpdateIn,
             if not (order.products or []):
                 missing.append("daftar produk")
             if missing:
-                detail = ", ".join(missing)
-                note += f"\nMohon lengkapi data berikut agar pesanan bisa diproses: {detail}."
+                detail = "\n".join(f"• {item}" for item in missing)
+                note += f"\nMohon lengkapi data berikut agar pesanan bisa diproses:\n{detail}"
             else:
                 note += ("\nData pesanan Anda sudah terisi seluruhnya, "
                          "mohon ditunggu untuk konfirmasi status berikutnya ya.")
