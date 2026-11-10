@@ -39,6 +39,8 @@
     --color-secondary: var(--secondary);
     --color-primary-foreground: var(--primary-foreground);
     --color-primary: var(--primary);
+    --color-primary-ink: var(--primary-ink);
+    --color-primary-strong: var(--primary-strong);
     --color-popover-foreground: var(--popover-foreground);
     --color-popover: var(--popover);
     --color-card-foreground: var(--card-foreground);
@@ -66,6 +68,8 @@
     --popover-foreground: #1A1A1A;
     --primary: #0E9F8A;
     --primary-foreground: #FFFFFF;
+    --primary-ink: #0B7A69;
+    --primary-strong: #0B7A69;
     --secondary: #F0E5D8;
     --secondary-foreground: #1A1A1A;
     --muted: #F7F4F0;
@@ -104,6 +108,8 @@
     --popover-foreground: #E8EDE9;
     --primary: #14B89C;
     --primary-foreground: #06251F;
+    --primary-ink: #7FE0BF;
+    --primary-strong: #14B89C;
     --secondary: #22302A;
     --secondary-foreground: #E8EDE9;
     --muted: #1B2620;
@@ -136,52 +142,6 @@
     background-image: linear-gradient(180deg, #FFFFFF 0%, #F6F4F0 100%);
 }
 
-.mesh {
-    position: relative;
-    isolation: isolate;
-    overflow: hidden;
-    background-color: #07213B;
-}
-.mesh::before,
-.mesh::after {
-    content: "";
-    position: absolute;
-    z-index: -1;
-    inset: -40%;
-    filter: blur(90px);
-    will-change: transform;
-}
-.mesh::before {
-    background:
-        radial-gradient(circle at 25% 30%, rgba(52, 211, 153, 0.85) 0%, transparent 45%),
-        radial-gradient(circle at 75% 20%, rgba(34, 211, 238, 0.7) 0%, transparent 45%),
-        radial-gradient(circle at 60% 80%, rgba(163, 230, 53, 0.55) 0%, transparent 50%);
-    animation: mesh-a 22s ease-in-out infinite alternate;
-}
-.mesh::after {
-    background:
-        radial-gradient(circle at 80% 75%, rgba(16, 185, 129, 0.7) 0%, transparent 45%),
-        radial-gradient(circle at 20% 80%, rgba(14, 116, 144, 0.8) 0%, transparent 50%),
-        radial-gradient(circle at 50% 10%, rgba(59, 130, 246, 0.5) 0%, transparent 45%);
-    animation: mesh-b 28s ease-in-out infinite alternate;
-}
-
-@keyframes mesh-a {
-    0% { transform: translate3d(-6%, -4%, 0) rotate(0deg) scale(1); }
-    50% { transform: translate3d(5%, 6%, 0) rotate(25deg) scale(1.15); }
-    100% { transform: translate3d(-3%, 8%, 0) rotate(-15deg) scale(1.05); }
-}
-@keyframes mesh-b {
-    0% { transform: translate3d(6%, 5%, 0) rotate(0deg) scale(1.1); }
-    50% { transform: translate3d(-5%, -6%, 0) rotate(-20deg) scale(1); }
-    100% { transform: translate3d(4%, -5%, 0) rotate(18deg) scale(1.2); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-    .mesh::before,
-    .mesh::after { animation: none; }
-}
-
 @utility hairline-green {
     border: 1px solid rgba(14, 159, 138, 0.1);
 }
@@ -203,7 +163,7 @@
   to { opacity: 1; transform: none; }
 }
 .rise {
-  animation: rise 0.4s ease both;
+  animation: rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
   .rise { animation: none; }
@@ -219,4 +179,56 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .bubble-in { animation: none; }
+}
+
+@keyframes typing-dot {
+  0%, 60%, 100% { opacity: 0.3; }
+  30% { opacity: 1; }
+}
+.typing-dot {
+  animation: typing-dot 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* Pratinjau chat: satu putaran 14 detik — pelanggan bertanya, bot mengetik,
+   bot menjawab, pesanan tercatat, lalu mulai lagi. */
+.chat-step {
+  opacity: 0;
+  animation-duration: 14s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-iteration-count: infinite;
+  animation-fill-mode: both;
+}
+.chat-step-1 { animation-name: chat-1; }
+.chat-step-2 { animation-name: chat-2; }
+.chat-step-3 { animation-name: chat-3; }
+.chat-step-4 { animation-name: chat-4; }
+
+@keyframes chat-1 {
+  0% { opacity: 0; transform: translateY(8px); }
+  3% { opacity: 1; transform: none; }
+  93% { opacity: 1; transform: none; }
+  97%, 100% { opacity: 0; transform: none; }
+}
+@keyframes chat-2 {
+  0%, 10% { opacity: 0; transform: translateY(8px); }
+  14% { opacity: 1; transform: none; }
+  30% { opacity: 1; transform: none; }
+  33%, 100% { opacity: 0; transform: none; }
+}
+@keyframes chat-3 {
+  0%, 26% { opacity: 0; transform: translateY(8px); }
+  31% { opacity: 1; transform: none; }
+  93% { opacity: 1; transform: none; }
+  97%, 100% { opacity: 0; transform: none; }
+}
+@keyframes chat-4 {
+  0%, 42% { opacity: 0; transform: translateY(8px); }
+  47% { opacity: 1; transform: none; }
+  93% { opacity: 1; transform: none; }
+  97%, 100% { opacity: 0; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot { animation: none; opacity: 0.6; }
+  .chat-step { animation: none; opacity: 1; transform: none; }
 }

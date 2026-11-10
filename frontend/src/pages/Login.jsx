@@ -49,10 +49,12 @@ export default function Login() {
 
   return (
     <AuthLayout>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">Masuk ke CuraBot</h1>
-        <p className="mt-1.5 text-sm text-muted-foreground">
-          Kelola bot layanan pelanggan Anda dalam satu tempat.
+      <div className="mb-8">
+        <h1 className="text-[28px] leading-tight font-medium tracking-[-0.01em]">
+          Masuk ke CuraBot
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Kelola bot Telegram dan pesanan pelanggan Anda dalam satu tempat
         </p>
       </div>
 
@@ -92,7 +94,7 @@ export default function Login() {
               id="password"
               type={showPassword ? 'text' : 'password'}
               autoComplete="current-password"
-              placeholder="Kata sandi Anda"
+              placeholder="Kata sandi"
               className="pr-11"
               value={form.password}
               onChange={update('password')}
@@ -106,9 +108,9 @@ export default function Login() {
               aria-label={showPassword ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi'}
             >
               {showPassword ? (
-                <EyeOff className="size-4.5" aria-hidden="true" />
+                <EyeOff className="size-4" strokeWidth={1.5} aria-hidden="true" />
               ) : (
-                <Eye className="size-4.5" aria-hidden="true" />
+                <Eye className="size-4" strokeWidth={1.5} aria-hidden="true" />
               )}
             </button>
           </div>
@@ -119,7 +121,12 @@ export default function Login() {
           ) : null}
         </div>
 
-        <Button type="submit" size="lg" className="w-full" disabled={submitting}>
+        <Button
+          type="submit"
+          size="lg"
+          className="w-full bg-primary-strong text-primary-foreground hover:bg-primary-strong/90"
+          disabled={submitting}
+        >
           {submitting ? (
             <>
               <Loader2 className="animate-spin" aria-hidden="true" />
@@ -133,8 +140,8 @@ export default function Login() {
 
       <p className="mt-6 text-center text-sm text-muted-foreground">
         Belum punya akun?{' '}
-        <Link to="/register" className="font-semibold text-primary hover:underline">
-          Daftar sekarang
+        <Link to="/register" className="font-medium text-primary-ink hover:underline">
+          Daftar
         </Link>
       </p>
     </AuthLayout>
